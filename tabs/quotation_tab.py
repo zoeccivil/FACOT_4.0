@@ -583,7 +583,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 self._append_row(code, name, unit, qty, price, subtotal)
             
             # Recalculate totals
-            self._recalculate_quotation_totals()
+            self._recalculate_totals()
             
             QMessageBox.information(self, "Cargar Cotización", f"Cotización ID: {quotation_id} cargada para edición")
             
