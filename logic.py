@@ -814,6 +814,11 @@ class LogicController:
     # Cotizaciones
     # -------------------------
     def add_quotation(self, quotation_data, items):
+        """
+        Inserta una cotización y sus items.
+        
+        INTEGRACIÓN: Registra la creación en auditoría.
+        """
         cur = self.conn.cursor()
         qdate = quotation_data.get('quotation_date')
         due_date = self.compute_quotation_due_date(qdate)
@@ -841,6 +846,21 @@ class LogicController:
             """, (quotation_id, code, desc, qty, up, unit_from_master))
 
         self.conn.commit()
+        
+        # NUEVO: Registrar en auditoría
+        try:
+            audit_data = quotation_data.copy()
+            audit_data['id'] = quotation_id
+            self.audit_service.log_action(
+                entity_type='quotation',
+                entity_id=quotation_id,
+                action='create',
+                payload_after=audit_data,
+                user=os.getenv('USER', 'system')
+            )
+        except Exception as e:
+            print(f"[DEBUG-LOGIC] Error al registrar auditoría de cotización: {e}")
+        
         return quotation_id
 
     def get_quotations(self, company_id):
@@ -872,7 +892,23 @@ class LogicController:
         return out
 
     def update_quotation(self, quotation_id, quotation_data, items):
+        """
+        Actualiza una cotización existente y sus items.
+        
+        INTEGRACIÓN: Registra los cambios en auditoría.
+        """
         cur = self.conn.cursor()
+        
+        # NUEVO: Obtener datos anteriores para auditoría
+        payload_before = None
+        try:
+            cur.execute("SELECT * FROM quotations WHERE id = ?", (quotation_id,))
+            row = cur.fetchone()
+            if row:
+                payload_before = dict(row)
+        except Exception as e:
+            print(f"[DEBUG-LOGIC] Error al obtener quotation anterior: {e}")
+        
         cur.execute("""
             UPDATE quotations SET quotation_date=?, client_name=?, client_rnc=?, notes=?, currency=?, total_amount=?, excel_path=?, pdf_path=?
              WHERE id=?
@@ -896,12 +932,56 @@ class LogicController:
                 float(it.get('unit_price', 0.0) or 0.0), unit or None
             ))
         self.conn.commit()
+        
+        # NUEVO: Registrar en auditoría
+        try:
+            audit_data_after = quotation_data.copy()
+            audit_data_after['id'] = quotation_id
+            self.audit_service.log_action(
+                entity_type='quotation',
+                entity_id=quotation_id,
+                action='update',
+                payload_before=payload_before,
+                payload_after=audit_data_after,
+                user=os.getenv('USER', 'system')
+            )
+        except Exception as e:
+            print(f"[DEBUG-LOGIC] Error al registrar auditoría de actualización: {e}")
 
     def delete_quotation(self, quotation_id):
+        """
+        Elimina una cotización y sus items.
+        
+        INTEGRACIÓN: Registra la eliminación en auditoría.
+        """
         cur = self.conn.cursor()
+        
+        # NUEVO: Obtener datos antes de eliminar para auditoría
+        payload_before = None
+        try:
+            cur.execute("SELECT * FROM quotations WHERE id = ?", (quotation_id,))
+            row = cur.fetchone()
+            if row:
+                payload_before = dict(row)
+        except Exception as e:
+            print(f"[DEBUG-LOGIC] Error al obtener quotation para auditoría: {e}")
+        
         cur.execute("DELETE FROM quotation_items WHERE quotation_id=?", (quotation_id,))
         cur.execute("DELETE FROM quotations WHERE id=?", (quotation_id,))
         self.conn.commit()
+        
+        # NUEVO: Registrar en auditoría
+        try:
+            if payload_before:
+                self.audit_service.log_action(
+                    entity_type='quotation',
+                    entity_id=quotation_id,
+                    action='delete',
+                    payload_before=payload_before,
+                    user=os.getenv('USER', 'system')
+                )
+        except Exception as e:
+            print(f"[DEBUG-LOGIC] Error al registrar auditoría de eliminación: {e}")
 
     # -------------------------
     # Terceros
