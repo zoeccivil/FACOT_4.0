@@ -506,6 +506,92 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 self.apply_itbis_checkbox.setChecked(True)
         except Exception:
             pass
+    
+    def load_quotation_by_id(self, quotation_id: int):
+        """
+        Load an existing quotation into the form for editing.
+        
+        Args:
+            quotation_id: ID of the quotation to load
+        """
+        try:
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            # Get quotation data
+            quotation = None
+            if hasattr(self.logic, 'get_quotation_by_id'):
+                quotation = self.logic.get_quotation_by_id(quotation_id)
+            else:
+                # Fallback: search in get_quotations
+                company = self.get_current_company()
+                if company and hasattr(self.logic, 'get_quotations'):
+                    quotations = self.logic.get_quotations(company['id'])
+                    for q in quotations:
+                        if q.get('id') == quotation_id or str(q.get('id')) == str(quotation_id):
+                            quotation = q
+                            break
+            
+            if not quotation:
+                QMessageBox.warning(self, "Error", f"No se encontró la cotización con ID: {quotation_id}")
+                return
+            
+            # Clear form first
+            self._clear_form()
+            
+            # Load header data
+            # Date
+            date_str = quotation.get('quotation_date', '')
+            if date_str:
+                try:
+                    from datetime import datetime
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    self.quotation_date.setDate(QDate(date_obj.year, date_obj.month, date_obj.day))
+                except Exception:
+                    pass
+            
+            # Client data
+            self.quotation_client_name.setText(quotation.get('client_name', ''))
+            self.quotation_client_rnc.setText(quotation.get('client_rnc', ''))
+            
+            # Currency
+            currency = quotation.get('currency', 'RD$')
+            self.quotation_currency.setText(currency)
+            
+            # Notes
+            notes = quotation.get('notes', '')
+            if notes:
+                self.quotation_notes.setText(notes)
+                self.notes_box.setVisible(True)
+                self.notes_toggle.setChecked(True)
+                self.notes_toggle.setArrowType(Qt.ArrowType.DownArrow)
+            
+            # Load items
+            items = []
+            if hasattr(self.logic, 'get_quotation_items'):
+                items = self.logic.get_quotation_items(quotation_id)
+            
+            # Populate items table
+            self.quotation_items_table.setRowCount(0)
+            for item in items:
+                code = item.get('item_code', item.get('code', ''))
+                name = item.get('description', item.get('name', ''))
+                unit = item.get('unit', 'UND')
+                qty = item.get('quantity', 0.0)
+                price = item.get('unit_price', item.get('price', 0.0))
+                subtotal = qty * price
+                self._append_row(code, name, unit, qty, price, subtotal)
+            
+            # Recalculate totals
+            self._recalculate_quotation_totals()
+            
+            QMessageBox.information(self, "Cargar Cotización", f"Cotización ID: {quotation_id} cargada para edición")
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception("Error al cargar cotización: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo cargar la cotización:\n{str(e)}")
 
     def _get_company_payload_for_preview(self):
         company_min = self.get_current_company() or {}

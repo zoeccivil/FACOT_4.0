@@ -64,6 +64,8 @@ class QuotationHistoryTab(QWidget):
         super().__init__(parent)
         self.logic = logic
         self.get_current_company = get_current_company_callable
+        self.main_window = None  # Will be set externally
+        self.all_quotations = []  # Store all quotations for client-side filtering
         self._build_ui()
         # safe refresh: si falla, no rompa el import
         try:
@@ -74,13 +76,60 @@ class QuotationHistoryTab(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Historial de Cotizaciones"))
-        # add actions column
+        
+        # === TOP FILTER BAR ===
+        filter_bar = QHBoxLayout()
+        
+        # Date Filter - Month/Year
+        filter_bar.addWidget(QLabel("Mes:"))
+        self.month_combo = QComboBox()
+        self.month_combo.addItem("Todos", None)
+        months = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        for i, month in enumerate(months, 1):
+            self.month_combo.addItem(month, i)
+        self.month_combo.currentIndexChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.month_combo)
+        
+        filter_bar.addWidget(QLabel("Año:"))
+        self.year_combo = QComboBox()
+        self.year_combo.addItem("Todos", None)
+        from datetime import datetime
+        current_year = datetime.now().year
+        for year in range(current_year, current_year - 10, -1):
+            self.year_combo.addItem(str(year), year)
+        self.year_combo.currentIndexChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.year_combo)
+        
+        # Search Bar - Client Name
+        filter_bar.addWidget(QLabel("Buscar Cliente:"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Nombre del cliente...")
+        self.search_input.textChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.search_input)
+        
+        filter_bar.addStretch()
+        layout.addLayout(filter_bar)
+        
+        # === TABLE ===
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["ID", "Fecha", "Cliente", "RNC", "Moneda", "Total", "Notas", "Acciones"])
+        
         header = self.table.horizontalHeader()
-        # Make columns stretch except actions which is fixed
-        for i in range(self.table.columnCount()):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+        # Enable sorting
+        self.table.setSortingEnabled(True)
+        
+        # Column resize strategy - fill entire width without gaps
+        # Set specific columns to Interactive (user can resize)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # ID
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Fecha
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)      # Cliente - takes available space
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)  # RNC
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)  # Moneda
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)  # Total
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)  # Notas
+        
+        # Actions column - fixed width
         actions_col = self.table.columnCount() - 1
         header.setSectionResizeMode(actions_col, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(actions_col, 200)
@@ -88,23 +137,160 @@ class QuotationHistoryTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(False)
+        
+        # === CONTEXT MENU ===
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        
         layout.addWidget(self.table)
+        
+        # Refresh button
         btn_refresh = QPushButton("Refrescar Historial")
         btn_refresh.clicked.connect(self.refresh)
         layout.addWidget(btn_refresh)
-
-    def refresh(self):
-        company = self.get_current_company()
-        if not company:
+    
+    def _show_context_menu(self, position):
+        """Show context menu on right-click."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+        
+        # Get the selected row
+        index = self.table.indexAt(position)
+        if not index.isValid():
             return
+        
+        row = index.row()
+        quotation_id_item = self.table.item(row, 0)
+        if not quotation_id_item:
+            return
+        
+        quotation_id = quotation_id_item.text()
+        
+        # Create context menu
+        menu = QMenu(self)
+        
+        edit_action = QAction("✏️ Editar", self)
+        edit_action.triggered.connect(lambda: self._edit_quotation(quotation_id))
+        menu.addAction(edit_action)
+        
+        delete_action = QAction("🗑️ Eliminar", self)
+        delete_action.triggered.connect(lambda: self._delete_quotation(quotation_id))
+        menu.addAction(delete_action)
+        
+        # Show menu at cursor position
+        menu.exec(self.table.viewport().mapToGlobal(position))
+    
+    def _edit_quotation(self, quotation_id):
+        """Edit a quotation by loading it in the quotation tab."""
         try:
-            cotizaciones = self.logic.get_quotations(company['id']) if hasattr(self.logic, "get_quotations") else []
+            # Get main window reference
+            if not self.main_window:
+                # Try to find main window
+                parent = self.parent()
+                while parent:
+                    if hasattr(parent, 'quotation_tab'):
+                        self.main_window = parent
+                        break
+                    parent = parent.parent()
+            
+            if not self.main_window or not hasattr(self.main_window, 'quotation_tab'):
+                QMessageBox.warning(self, "Error", "No se pudo acceder a la pestaña de cotizaciones")
+                return
+            
+            # Load quotation in quotation tab
+            if hasattr(self.main_window.quotation_tab, 'load_quotation_by_id'):
+                self.main_window.quotation_tab.load_quotation_by_id(int(quotation_id))
+                # Switch to quotation tab (index 2)
+                if hasattr(self.main_window, 'content_stack'):
+                    self.main_window.content_stack.setCurrentIndex(2)
+                    self.main_window._navigate_to(2)
+            else:
+                QMessageBox.warning(self, "Error", "La funcionalidad de edición no está disponible")
         except Exception as e:
-            logger.exception("Error al obtener cotizaciones: %s", e)
-            cotizaciones = []
-
+            logger.exception("Error al editar cotización: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo editar la cotización:\n{str(e)}")
+    
+    def _delete_quotation(self, quotation_id):
+        """Delete a quotation after confirmation."""
+        try:
+            # Confirm deletion
+            reply = QMessageBox.question(
+                self,
+                "Confirmar Eliminación",
+                f"¿Está seguro que desea eliminar la cotización ID: {quotation_id}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            
+            # Delete quotation
+            if hasattr(self.logic, 'delete_quotation'):
+                self.logic.delete_quotation(int(quotation_id))
+                QMessageBox.information(self, "Éxito", "Cotización eliminada correctamente")
+                # Refresh table
+                self.refresh()
+            else:
+                QMessageBox.warning(self, "Error", "La funcionalidad de eliminación no está disponible")
+        except Exception as e:
+            logger.exception("Error al eliminar cotización: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo eliminar la cotización:\n{str(e)}")
+    
+    def _apply_filters(self):
+        """Apply filters to the table based on selected month/year and search text."""
+        # Disable sorting temporarily while updating
+        self.table.setSortingEnabled(False)
+        
+        month = self.month_combo.currentData()
+        year = self.year_combo.currentData()
+        search_text = self.search_input.text().lower().strip()
+        
+        # Filter quotations
+        filtered = []
+        for q in self.all_quotations:
+            # Date filter
+            if month or year:
+                date_str = q.get('quotation_date', '')
+                if date_str:
+                    try:
+                        from datetime import datetime
+                        # Parse date - handle multiple formats
+                        date_obj = None
+                        for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                            try:
+                                date_obj = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if date_obj:
+                            if month and date_obj.month != month:
+                                continue
+                            if year and date_obj.year != year:
+                                continue
+                        else:
+                            continue  # Skip if date couldn't be parsed
+                    except Exception:
+                        continue
+            
+            # Search filter
+            if search_text:
+                client_name = q.get('client_name', '').lower()
+                if search_text not in client_name:
+                    continue
+            
+            filtered.append(q)
+        
+        # Update table
+        self._populate_table(filtered)
+        
+        # Re-enable sorting
+        self.table.setSortingEnabled(True)
+    
+    def _populate_table(self, quotations):
+        """Populate table with quotations."""
         self.table.setRowCount(0)
-        for q in cotizaciones:
+        for q in quotations:
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(str(q.get('id', ''))))
@@ -120,6 +306,26 @@ class QuotationHistoryTab(QWidget):
                 self._add_quotation_action_buttons(row, q)
             except Exception:
                 logger.exception("Error añadiendo boton de acciones para cotizacion id=%s", q.get('id'))
+
+    def refresh(self):
+        """Refresh quotation history."""
+        company = self.get_current_company()
+        if not company:
+            return
+        try:
+            cotizaciones = self.logic.get_quotations(company['id']) if hasattr(self.logic, "get_quotations") else []
+        except Exception as e:
+            logger.exception("Error al obtener cotizaciones: %s", e)
+            cotizaciones = []
+        
+        # Store all quotations for filtering
+        self.all_quotations = cotizaciones
+        
+        # Log the fetch
+        logger.info(f"Quotation History Fetch: Retrieved {len(cotizaciones)} quotations")
+        
+        # Populate table (will be filtered by date/search if applied)
+        self._apply_filters()
 
     def _add_quotation_action_buttons(self, row: int, record: Dict[str, Any]):
             """

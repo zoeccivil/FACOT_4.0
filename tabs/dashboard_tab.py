@@ -141,8 +141,11 @@ class SalesChart(QFrame):
             
             # Create plot widget
             self.plot_widget = pg.PlotWidget()
-            self.plot_widget.setBackground('w')
+            self.plot_widget.setBackground('w')  # White background for visibility
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+            
+            # CRITICAL: Set minimum height for visibility
+            self.plot_widget.setMinimumHeight(300)
             
             # Style the plot
             self.plot_widget.setLabel('left', 'Ingresos', units='$')

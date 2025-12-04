@@ -118,9 +118,15 @@ class InvoiceHistoryTab(QWidget):
         # Enable sorting
         self.table.setSortingEnabled(True)
         
-        # Allow column resizing - Interactive mode
-        for i in range(self.table.columnCount() - 1):  # All except Actions
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+        # Column resize strategy - fill entire width without gaps
+        # Set specific columns to Interactive (user can resize)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # ID
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Fecha
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)  # NCF
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)      # Cliente - takes available space
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)  # RNC
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)  # Moneda
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)  # Total
         
         # Actions column - fixed width
         actions_col = self.table.columnCount() - 1
