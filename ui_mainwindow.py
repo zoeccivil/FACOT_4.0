@@ -13,6 +13,10 @@ import os, sys
 import facot_config
 from logic import LogicController
 
+# Firebase imports (required for Firebase-only enforcement)
+from data_access import get_data_access, DataAccessMode
+from firebase import get_firebase_client
+
 # Tabs modulares
 from tabs.invoice_tab import InvoiceTab
 import sys
@@ -139,9 +143,6 @@ class MainWindow(QMainWindow):
             bool: True if Firebase was successfully initialized, False otherwise
         """
         try:
-            from data_access import get_data_access, DataAccessMode
-            from firebase import get_firebase_client
-            
             # Get or refresh Firebase client
             firebase_client = get_firebase_client()
             
@@ -184,8 +185,6 @@ class MainWindow(QMainWindow):
         firebase_error = None
         
         try:
-            from firebase import get_firebase_client
-            
             # Check if Firebase is available
             firebase_client = get_firebase_client()
             if not firebase_client.is_available():

@@ -10,33 +10,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QSize, Qt
 
+# Import centralized invoice type constants
+from constants import INGRESO_TYPES_FULL as INGRESO_TYPES
+
 logger = logging.getLogger(__name__)
-
-# Tipos de categoría/tipo de factura que se consideran "ingresos" (ventas)
-INVOICE_TYPE_INGRESOS: Set[str] = {
-    "INGRESO",
-    "FACTURA",
-    "FACTURA PRIVADA",
-    "EMITIDA",
-    "VENTA",
-    "CREDITO FISCAL",
-    "CONSUMIDOR FINAL",
-    "GUBERNAMENTAL",
-    "REGIMEN ESPECIAL",
-    "EXPORTACION",
-}
-
-# Prefijos NCF que corresponden a comprobantes de venta/ingreso
-NCF_PREFIX_INGRESOS: Set[str] = {
-    "B01",  # Crédito Fiscal
-    "B02",  # Consumidor Final
-    "B14",  # Régimen Especial
-    "B15",  # Gubernamental
-    "B16",  # Exportación
-}
-
-# Conjunto combinado para filtrado
-INGRESO_TYPES: Set[str] = INVOICE_TYPE_INGRESOS | NCF_PREFIX_INGRESOS
 
 # Optional dependencies with safe fallbacks
 InvoicePreviewDialog = None

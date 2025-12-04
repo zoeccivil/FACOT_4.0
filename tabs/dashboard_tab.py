@@ -204,8 +204,9 @@ class SalesChart(QFrame):
             # If there's any non-zero data, scale to show it nicely
             self.plot_widget.setYRange(0, max_sale * 1.1)
         else:
-            # All sales are zero or no data - use a default range
-            self.plot_widget.setYRange(0, 1000)
+            # All sales are zero or no data - use a modest default range
+            # 100 is more appropriate than 1000 for a clean empty chart
+            self.plot_widget.setYRange(0, 100)
         self.plot_widget.setXRange(0, 13)
 
 
