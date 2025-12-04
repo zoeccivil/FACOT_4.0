@@ -64,6 +64,8 @@ class InvoiceHistoryTab(QWidget):
         super().__init__(parent)
         self.logic = logic
         self.get_current_company = get_current_company_callable
+        self.main_window = None  # Will be set externally
+        self.all_invoices = []  # Store all invoices for client-side filtering
         self._build_ui()
         try:
             self.refresh()
@@ -73,62 +75,215 @@ class InvoiceHistoryTab(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Historial de Facturas"))
-        # Add an actions column at the end
+        
+        # === TOP FILTER BAR ===
+        filter_bar = QHBoxLayout()
+        
+        # Date Filter - Month/Year
+        filter_bar.addWidget(QLabel("Mes:"))
+        self.month_combo = QComboBox()
+        self.month_combo.addItem("Todos", None)
+        months = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        for i, month in enumerate(months, 1):
+            self.month_combo.addItem(month, i)
+        self.month_combo.currentIndexChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.month_combo)
+        
+        filter_bar.addWidget(QLabel("Año:"))
+        self.year_combo = QComboBox()
+        self.year_combo.addItem("Todos", None)
+        from datetime import datetime
+        current_year = datetime.now().year
+        for year in range(current_year, current_year - 10, -1):
+            self.year_combo.addItem(str(year), year)
+        self.year_combo.currentIndexChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.year_combo)
+        
+        # Search Bar - Client Name
+        filter_bar.addWidget(QLabel("Buscar Cliente:"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Nombre del cliente...")
+        self.search_input.textChanged.connect(self._apply_filters)
+        filter_bar.addWidget(self.search_input)
+        
+        filter_bar.addStretch()
+        layout.addLayout(filter_bar)
+        
+        # === TABLE ===
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["ID", "Fecha", "NCF", "Cliente", "RNC", "Moneda", "Total", "Acciones"])
 
         header = self.table.horizontalHeader()
-        # Make all columns stretchable except actions which we reserve a fixed width
-        for i in range(self.table.columnCount()):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
-
+        # Enable sorting
+        self.table.setSortingEnabled(True)
+        
+        # Allow column resizing - Interactive mode
+        for i in range(self.table.columnCount() - 1):  # All except Actions
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+        
+        # Actions column - fixed width
         actions_col = self.table.columnCount() - 1
-        # Ensure actions column has a fixed width so buttons don't get squeezed by text columns
         header.setSectionResizeMode(actions_col, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(actions_col, 200)  # adjust if needed
+        self.table.setColumnWidth(actions_col, 200)
 
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(False)
+        
+        # === CONTEXT MENU ===
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        
         layout.addWidget(self.table)
+        
+        # Refresh button
         btn_refresh = QPushButton("Refrescar Historial")
         btn_refresh.clicked.connect(self.refresh)
         layout.addWidget(btn_refresh)
-
-    def _filter_ingreso_invoices(self, facturas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        filtered = []
-        for inv in facturas:
-            invoice_type = (
-                inv.get('type') or
-                inv.get('invoice_type') or
-                inv.get('category') or
-                inv.get('invoice_category') or
-                ''
-            ).upper().strip()
-
-            ncf = (inv.get('invoice_number') or inv.get('ncf') or '').upper()
-            ncf_prefix = ncf[:3] if len(ncf) >= 3 else ''
-
-            if invoice_type in INGRESO_TYPES or ncf_prefix in INGRESO_TYPES:
-                filtered.append(inv)
-            elif not invoice_type and ncf:
-                filtered.append(inv)
-        return filtered
-
-    def refresh(self):
-        company = self.get_current_company()
-        if not company:
+    
+    def _show_context_menu(self, position):
+        """Show context menu on right-click."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+        
+        # Get the selected row
+        index = self.table.indexAt(position)
+        if not index.isValid():
             return
+        
+        row = index.row()
+        invoice_id_item = self.table.item(row, 0)
+        if not invoice_id_item:
+            return
+        
+        invoice_id = invoice_id_item.text()
+        
+        # Create context menu
+        menu = QMenu(self)
+        
+        edit_action = QAction("✏️ Editar", self)
+        edit_action.triggered.connect(lambda: self._edit_invoice(invoice_id))
+        menu.addAction(edit_action)
+        
+        delete_action = QAction("🗑️ Eliminar", self)
+        delete_action.triggered.connect(lambda: self._delete_invoice(invoice_id))
+        menu.addAction(delete_action)
+        
+        # Show menu at cursor position
+        menu.exec(self.table.viewport().mapToGlobal(position))
+    
+    def _edit_invoice(self, invoice_id):
+        """Edit an invoice by loading it in the invoice tab."""
         try:
-            facturas = self.logic.get_facturas(company['id']) if hasattr(self.logic, "get_facturas") else []
+            # Get main window reference
+            if not self.main_window:
+                # Try to find main window
+                parent = self.parent()
+                while parent:
+                    if hasattr(parent, 'invoice_tab'):
+                        self.main_window = parent
+                        break
+                    parent = parent.parent()
+            
+            if not self.main_window or not hasattr(self.main_window, 'invoice_tab'):
+                QMessageBox.warning(self, "Error", "No se pudo acceder a la pestaña de facturas")
+                return
+            
+            # Load invoice in invoice tab
+            if hasattr(self.main_window.invoice_tab, 'load_invoice_by_id'):
+                self.main_window.invoice_tab.load_invoice_by_id(int(invoice_id))
+                # Switch to invoice tab (index 1)
+                if hasattr(self.main_window, 'content_stack'):
+                    self.main_window.content_stack.setCurrentIndex(1)
+                    self.main_window._navigate_to(1)
+            else:
+                QMessageBox.warning(self, "Error", "La funcionalidad de edición no está disponible")
         except Exception as e:
-            logger.exception("Error obteniendo facturas: %s", e)
-            facturas = []
-
-        facturas = self._filter_ingreso_invoices(facturas)
-
+            logger.exception("Error al editar factura: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo editar la factura:\n{str(e)}")
+    
+    def _delete_invoice(self, invoice_id):
+        """Delete an invoice after confirmation."""
+        try:
+            # Confirm deletion
+            reply = QMessageBox.question(
+                self,
+                "Confirmar Eliminación",
+                f"¿Está seguro que desea eliminar la factura ID: {invoice_id}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            
+            # Delete invoice
+            if hasattr(self.logic, 'delete_factura'):
+                self.logic.delete_factura(int(invoice_id))
+                QMessageBox.information(self, "Éxito", "Factura eliminada correctamente")
+                # Refresh table
+                self.refresh()
+            else:
+                QMessageBox.warning(self, "Error", "La funcionalidad de eliminación no está disponible")
+        except Exception as e:
+            logger.exception("Error al eliminar factura: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo eliminar la factura:\n{str(e)}")
+    
+    def _apply_filters(self):
+        """Apply filters to the table based on selected month/year and search text."""
+        # Disable sorting temporarily while updating
+        self.table.setSortingEnabled(False)
+        
+        month = self.month_combo.currentData()
+        year = self.year_combo.currentData()
+        search_text = self.search_input.text().lower().strip()
+        
+        # Filter invoices
+        filtered = []
+        for inv in self.all_invoices:
+            # Date filter
+            if month or year:
+                date_str = inv.get('invoice_date', '')
+                if date_str:
+                    try:
+                        from datetime import datetime
+                        # Parse date - handle multiple formats
+                        date_obj = None
+                        for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                            try:
+                                date_obj = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if date_obj:
+                            if month and date_obj.month != month:
+                                continue
+                            if year and date_obj.year != year:
+                                continue
+                        else:
+                            continue  # Skip if date couldn't be parsed
+                    except Exception:
+                        continue
+            
+            # Search filter
+            if search_text:
+                client_name = (inv.get('third_party_name', '') or inv.get('client_name', '')).lower()
+                if search_text not in client_name:
+                    continue
+            
+            filtered.append(inv)
+        
+        # Update table
+        self._populate_table(filtered)
+        
+        # Re-enable sorting
+        self.table.setSortingEnabled(True)
+    
+    def _populate_table(self, invoices):
+        """Populate table with invoices."""
         self.table.setRowCount(0)
-        for f in facturas:
+        for f in invoices:
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(str(f.get('id', ''))))
@@ -144,6 +299,46 @@ class InvoiceHistoryTab(QWidget):
                 self._add_invoice_action_buttons(row, f)
             except Exception:
                 logger.exception("Error añadiendo boton de acciones para factura id=%s", f.get('id'))
+
+    def _filter_ingreso_invoices(self, facturas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        STRICT CLIENT-SIDE FILTERING for 'emitida' invoices.
+        Stream all documents from invoices collection and filter locally.
+        ONLY count records where invoice_type.lower() == 'emitida'.
+        Ignore GASTO or COMPRA records.
+        """
+        filtered = []
+        for inv in facturas:
+            # Get invoice type field (case-insensitive)
+            inv_type = str(inv.get('invoice_type') or inv.get('type') or '').strip().lower()
+            
+            # STRICT RULE: Only include 'emitida' invoices
+            if inv_type == 'emitida':
+                filtered.append(inv)
+                
+        logger.info(f"Invoice History Fetch: Filtered {len(filtered)} 'emitida' invoices from {len(facturas)} total")
+        return filtered
+
+    def refresh(self):
+        """Refresh invoice history with client-side filtering."""
+        company = self.get_current_company()
+        if not company:
+            return
+        try:
+            # Get ALL invoices (stream from Firestore)
+            facturas = self.logic.get_facturas(company['id']) if hasattr(self.logic, "get_facturas") else []
+        except Exception as e:
+            logger.exception("Error obteniendo facturas: %s", e)
+            facturas = []
+
+        # Apply strict client-side filtering for 'emitida' only
+        facturas = self._filter_ingreso_invoices(facturas)
+        
+        # Store all filtered invoices for later filtering
+        self.all_invoices = facturas
+        
+        # Populate table (will be filtered by date/search if applied)
+        self._apply_filters()
 
     def _add_invoice_action_buttons(self, row: int, record: Dict[str, Any]):
             """

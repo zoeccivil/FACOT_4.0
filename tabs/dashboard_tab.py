@@ -445,8 +445,10 @@ class DashboardTab(QWidget):
         """
         Load dashboard data from the database.
         
-        IMPORTANT: Only counts invoices where type is in INGRESO_TYPES (e.g., "emitida").
-        Explicitly excludes EXPENSE_TYPES (e.g., "gasto") from revenue calculations.
+        STRICT CLIENT-SIDE FILTERING:
+        - Stream ALL documents from invoices collection
+        - Filter locally: ONLY count where invoice_type.lower() == 'emitida'
+        - Ignore: GASTO or COMPRA records
         """
         if not self.logic or not self.get_current_company:
             return
@@ -458,25 +460,29 @@ class DashboardTab(QWidget):
             
             company_id = company.get('id')
             
-            # Load invoice totals with FILTERING
+            # Load invoice totals with STRICT CLIENT-SIDE FILTERING
             if hasattr(self.logic, 'get_facturas'):
-                facturas = self.logic.get_facturas(company_id) or []
+                # Stream ALL invoices from Firestore
+                all_facturas = self.logic.get_facturas(company_id) or []
                 
-                # CRITICAL: Filter only income invoices (exclude expenses)
-                income_invoices = [
-                    f for f in facturas
-                    if f.get('invoice_type', '').lower() in [t.lower() for t in INGRESO_TYPES]
-                    and f.get('invoice_type', '').lower() not in [t.lower() for t in EXPENSE_TYPES]
-                ]
+                # STRICT FILTERING: Only invoice_type.lower() == 'emitida'
+                # Ignore GASTO, COMPRA, or any other type
+                income_invoices = []
+                for f in all_facturas:
+                    inv_type = str(f.get('invoice_type') or f.get('type') or '').strip().lower()
+                    if inv_type == 'emitida':
+                        income_invoices.append(f)
                 
-                # Total income (only from income invoices)
+                print(f"[Dashboard] Filtered {len(income_invoices)} 'emitida' invoices from {len(all_facturas)} total")
+                
+                # Total income (only from 'emitida' invoices)
                 total_ingresos = sum(
                     float(f.get('total_amount', 0) or 0)
                     for f in income_invoices
                 )
                 self.card_ingresos.set_value(f"${total_ingresos:,.2f}")
                 
-                # Pending invoices (only income invoices)
+                # Pending invoices (only 'emitida' invoices)
                 pending_total = sum(
                     float(f.get('total_amount', 0) or 0)
                     for f in income_invoices
@@ -484,7 +490,7 @@ class DashboardTab(QWidget):
                 )
                 self.card_pendientes.set_value(f"${pending_total:,.2f}")
                 
-                # Calculate monthly data for chart (current year only, income only)
+                # Calculate monthly data for chart (current year only, 'emitida' only)
                 self._update_chart_data(income_invoices)
             
             # Load quotation count

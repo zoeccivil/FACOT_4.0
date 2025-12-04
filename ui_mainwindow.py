@@ -340,6 +340,10 @@ class MainWindow(QMainWindow):
         self.invoice_history_tab = InvoiceHistoryTab(logic_to_pass, get_company)
         self.quotation_history_tab = QuotationHistoryTab(logic_to_pass, get_company)
         
+        # Set main window reference for history tabs (for Edit functionality)
+        self.invoice_history_tab.main_window = self
+        self.quotation_history_tab.main_window = self
+        
         # Connections: refresh history on save
         self.invoice_tab.invoice_saved.connect(lambda _id: self.invoice_history_tab.refresh())
         self.invoice_tab.invoice_saved.connect(lambda _id: self.dashboard_tab.refresh())
@@ -656,10 +660,6 @@ class MainWindow(QMainWindow):
         firebase_config_action.triggered.connect(self._abrir_configuracion_firebase)
         herramientas_menu.addAction(firebase_config_action)
 
-        # Menú Apariencias (Themes)
-        apariencias_menu = QMenu("🎨 &Apariencias", self); menu_bar.addMenu(apariencias_menu)
-        self._setup_theme_menu(apariencias_menu)
-
         # Menú Opciones
         opciones_menu = QMenu("&Opciones", self); menu_bar.addMenu(opciones_menu)
         config_rutas_action = QAction("Configurar Rutas...", self)
@@ -679,93 +679,6 @@ class MainWindow(QMainWindow):
         action_edit_template.setStatusTip("Editar plantilla para la empresa seleccionada")
         action_edit_template.triggered.connect(self._menu_edit_template)
         opciones_menu.addAction(action_edit_template)
-    
-    def _setup_theme_menu(self, menu: QMenu):
-        """Configura el menú de temas/apariencias (compatible con lista o dict)."""
-        try:
-            from utils.theme_manager import get_available_themes, get_theme_manager
-
-            themes = get_available_themes()
-            theme_manager = get_theme_manager()
-
-            # Normalizar la estructura a una lista de tuplas (theme_id, theme_label)
-            if isinstance(themes, dict):
-                theme_entries = list(themes.items())  # [(id, label), ...]
-            elif isinstance(themes, list):
-                theme_entries = [(t, t) for t in themes]  # [(name, name), ...]
-            else:
-                try:
-                    theme_entries = [(t, t) for t in list(themes)]
-                except Exception:
-                    theme_entries = []
-
-            # Si no hay entradas, añadir placeholder y salir
-            if not theme_entries:
-                placeholder = QAction("(Temas no disponibles)", self)
-                placeholder.setEnabled(False)
-                menu.addAction(placeholder)
-                return
-
-            # Tema actual desde config (si está disponible)
-            try:
-                current = facot_config.get_theme()
-            except Exception:
-                current = None
-
-            # Crear acciones para cada tema
-            for theme_id, theme_name in theme_entries:
-                action = QAction(str(theme_name), self)
-                action.setCheckable(True)
-                action.setData(str(theme_id))  # almacenar id real en action.data()
-
-                # marcar si es el tema actual
-                try:
-                    action.setChecked(str(theme_id) == str(current))
-                except Exception:
-                    action.setChecked(False)
-
-                # conectar acción (capturando theme_id en default arg)
-                action.triggered.connect(lambda checked, t=theme_id: self._apply_theme(t))
-
-                menu.addAction(action)
-
-        except Exception as e:
-            print(f"[THEME] Error configurando menú de temas: {e}")
-            placeholder = QAction("(Temas no disponibles)", self)
-            placeholder.setEnabled(False)
-            menu.addAction(placeholder)
-
-
-
-    def _apply_theme(self, theme_id: str):
-        """Aplica un tema y lo guarda en la configuración."""
-        try:
-            from utils.theme_manager import get_theme_manager
-            from PyQt6.QtWidgets import QApplication
-            
-            theme_manager = get_theme_manager()
-            theme_manager.set_app(QApplication.instance())
-            
-            if theme_manager.save_and_apply_theme(theme_id):
-                # Actualizar checkmarks en el menú
-                self._update_theme_menu_checks(theme_id)
-                QMessageBox.information(
-                    self,
-                    "Tema aplicado",
-                    f"El tema '{theme_id}' se ha aplicado correctamente."
-                )
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"No se pudo aplicar el tema: {e}")
-    
-    def _update_theme_menu_checks(self, current_theme: str):
-        """Actualiza los checkmarks del menú de temas."""
-        for menu in self.menuBar().findChildren(QMenu):
-            if "Apariencias" in menu.title():
-                for action in menu.actions():
-                    # Use stored data for reliable matching
-                    action_theme_id = action.data()
-                    if action_theme_id:
-                        action.setChecked(action_theme_id == current_theme)
     
     def _abrir_configuracion_firebase(self):
         """Abre el diálogo de configuración de Firebase."""
