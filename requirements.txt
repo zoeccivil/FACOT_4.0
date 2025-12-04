@@ -33,6 +33,9 @@ requests>=2.31.0
 # Interfaz gráfica adicional (legacy/tkinter)
 ttkthemes>=3.2.2
 
+# Charts and visualization
+pyqtgraph>=0.13.0
+
 # Validación y formato
 validators>=0.20.0
 

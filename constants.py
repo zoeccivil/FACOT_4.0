@@ -8,3 +8,9 @@ NCF_TYPES = {
 }
 ITBIS_RATE = 0.18
 DEFAULT_CURRENCY = "RD$"
+
+# Invoice Types
+# INGRESO_TYPES: Types that represent income/revenue (to be included in revenue calculations)
+# Exclude "gasto" (expenses) from revenue totals
+INGRESO_TYPES = ["emitida"]  # Issued invoices are income
+EXPENSE_TYPES = ["gasto"]  # Expense invoices should be excluded from revenue

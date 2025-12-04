@@ -3,18 +3,32 @@ DashboardTab - Modern dashboard view with summary cards and analytics.
 
 Replicates the React/Tailwind design:
 - 4 summary cards (Ingresos, Facturas Pendientes, etc.)
-- Chart area placeholder
+- Functional chart showing monthly sales
 - Recent activity list
+
+Data Filtering: ONLY counts invoices where type is "emitida" (Issued) or in INGRESO_TYPES.
+Explicitly excludes "gasto" (Expense) type invoices.
 """
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime, date
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout,
     QScrollArea, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+
+from constants import INGRESO_TYPES, EXPENSE_TYPES
+
+# Try to import pyqtgraph for charts
+try:
+    import pyqtgraph as pg
+    HAS_PYQTGRAPH = True
+except ImportError:
+    HAS_PYQTGRAPH = False
+    print("[DASHBOARD] pyqtgraph not available - using placeholder chart")
 
 
 class DashboardCard(QFrame):
@@ -97,10 +111,101 @@ class DashboardCard(QFrame):
         self.value_label.setText(value)
 
 
+class SalesChart(QFrame):
+    """
+    Chart widget showing sales per month using pyqtgraph.
+    Displays monthly revenue data for the current year.
+    
+    Data filtering: Only includes invoices with type in INGRESO_TYPES.
+    """
+    
+    def __init__(self, title: str = "Resumen de Ingresos", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("SalesChart")
+        self._setup_ui(title)
+    
+    def _setup_ui(self, title: str):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        
+        # Title
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color: #1e293b; font-size: 16px; font-weight: 600;")
+        layout.addWidget(title_label)
+        
+        # Chart widget
+        if HAS_PYQTGRAPH:
+            # Configure pyqtgraph
+            pg.setConfigOptions(antialias=True)
+            
+            # Create plot widget
+            self.plot_widget = pg.PlotWidget()
+            self.plot_widget.setBackground('w')
+            self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+            
+            # Style the plot
+            self.plot_widget.setLabel('left', 'Ingresos', units='$')
+            self.plot_widget.setLabel('bottom', 'Mes')
+            
+            # Configure axes
+            ax = self.plot_widget.getAxis('bottom')
+            ax.setTicks([[(i, datetime(2024, i, 1).strftime('%b')) for i in range(1, 13)]])
+            
+            layout.addWidget(self.plot_widget, 1)
+        else:
+            # Fallback to placeholder
+            placeholder = QLabel("📊 Instalar pyqtgraph para visualizar gráficos\n\npip install pyqtgraph")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color: #94a3b8; font-size: 14px; padding: 40px;")
+            layout.addWidget(placeholder, 1)
+            self.plot_widget = None
+        
+        self.setStyleSheet("""
+            QFrame#SalesChart {
+                background-color: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+            }
+        """)
+        self.setMinimumHeight(256)
+    
+    def update_chart(self, monthly_data: Dict[int, float]):
+        """
+        Update chart with monthly sales data.
+        
+        Args:
+            monthly_data: Dictionary mapping month (1-12) to total sales
+        """
+        if not HAS_PYQTGRAPH or not self.plot_widget:
+            return
+        
+        # Clear existing plots
+        self.plot_widget.clear()
+        
+        # Prepare data
+        months = list(range(1, 13))
+        sales = [monthly_data.get(m, 0.0) for m in months]
+        
+        # Create bar chart
+        bargraph = pg.BarGraphItem(
+            x=months,
+            height=sales,
+            width=0.6,
+            brush='#4f46e5',  # indigo-600
+            pen='#4338ca'     # indigo-700
+        )
+        self.plot_widget.addItem(bargraph)
+        
+        # Set reasonable y-axis range
+        max_sale = max(sales) if sales else 0
+        self.plot_widget.setYRange(0, max_sale * 1.1 if max_sale > 0 else 100)
+        self.plot_widget.setXRange(0, 13)
+
+
 class ChartPlaceholder(QFrame):
     """
-    Placeholder widget for chart area.
-    Will be replaced with actual chart implementation.
+    Placeholder widget for chart area (legacy - use SalesChart instead).
     """
     
     def __init__(self, title: str = "Chart", parent: Optional[QWidget] = None):
@@ -310,8 +415,8 @@ class DashboardTab(QWidget):
         bottom_layout = QHBoxLayout()
         bottom_layout.setSpacing(24)
         
-        # Chart area (2/3 width)
-        self.chart = ChartPlaceholder("Resumen de Ingresos")
+        # Chart area (2/3 width) - Use SalesChart instead of placeholder
+        self.chart = SalesChart("Resumen de Ingresos")
         bottom_layout.addWidget(self.chart, 2)
         
         # Activity list (1/3 width)
@@ -330,7 +435,12 @@ class DashboardTab(QWidget):
         main_layout.addWidget(scroll)
     
     def _load_data(self):
-        """Load dashboard data from the database."""
+        """
+        Load dashboard data from the database.
+        
+        IMPORTANT: Only counts invoices where type is in INGRESO_TYPES (e.g., "emitida").
+        Explicitly excludes EXPENSE_TYPES (e.g., "gasto") from revenue calculations.
+        """
         if not self.logic or not self.get_current_company:
             return
         
@@ -341,22 +451,34 @@ class DashboardTab(QWidget):
             
             company_id = company.get('id')
             
-            # Load invoice totals
+            # Load invoice totals with FILTERING
             if hasattr(self.logic, 'get_facturas'):
                 facturas = self.logic.get_facturas(company_id) or []
+                
+                # CRITICAL: Filter only income invoices (exclude expenses)
+                income_invoices = [
+                    f for f in facturas
+                    if f.get('invoice_type', '').lower() in [t.lower() for t in INGRESO_TYPES]
+                    and f.get('invoice_type', '').lower() not in [t.lower() for t in EXPENSE_TYPES]
+                ]
+                
+                # Total income (only from income invoices)
                 total_ingresos = sum(
                     float(f.get('total_amount', 0) or 0)
-                    for f in facturas
+                    for f in income_invoices
                 )
                 self.card_ingresos.set_value(f"${total_ingresos:,.2f}")
                 
-                # Pending invoices (simplified - all invoices for now)
+                # Pending invoices (only income invoices)
                 pending_total = sum(
                     float(f.get('total_amount', 0) or 0)
-                    for f in facturas
+                    for f in income_invoices
                     if f.get('status', '').lower() != 'paid'
                 )
                 self.card_pendientes.set_value(f"${pending_total:,.2f}")
+                
+                # Calculate monthly data for chart (current year only, income only)
+                self._update_chart_data(income_invoices)
             
             # Load quotation count
             if hasattr(self.logic, 'get_quotations'):
@@ -373,6 +495,61 @@ class DashboardTab(QWidget):
                 
         except Exception as e:
             print(f"[DashboardTab] Error loading invoice data: {e}")
+    
+    def _update_chart_data(self, invoices: List[Dict[str, Any]]):
+        """
+        Update chart with monthly sales data from invoices.
+        
+        Args:
+            invoices: List of income invoices (already filtered)
+        """
+        # Get current year
+        current_year = datetime.now().year
+        
+        # Initialize monthly totals
+        monthly_totals = {month: 0.0 for month in range(1, 13)}
+        
+        # Aggregate by month
+        for invoice in invoices:
+            try:
+                # Try to parse invoice date
+                invoice_date_str = invoice.get('invoice_date') or invoice.get('date')
+                if not invoice_date_str:
+                    continue
+                
+                # Parse date (handle multiple formats)
+                if isinstance(invoice_date_str, str):
+                    # Try ISO format first
+                    try:
+                        invoice_date = datetime.fromisoformat(invoice_date_str.replace('Z', '+00:00'))
+                    except ValueError:
+                        # Try common date formats
+                        for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                            try:
+                                invoice_date = datetime.strptime(invoice_date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            continue
+                elif isinstance(invoice_date_str, (datetime, date)):
+                    invoice_date = invoice_date_str
+                else:
+                    continue
+                
+                # Only count current year
+                if invoice_date.year == current_year:
+                    month = invoice_date.month
+                    amount = float(invoice.get('total_amount', 0) or 0)
+                    monthly_totals[month] += amount
+            
+            except Exception as e:
+                print(f"[DashboardTab] Error processing invoice date: {e}")
+                continue
+        
+        # Update chart
+        if hasattr(self.chart, 'update_chart'):
+            self.chart.update_chart(monthly_totals)
     
     def refresh(self):
         """Refresh dashboard data."""

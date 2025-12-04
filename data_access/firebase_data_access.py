@@ -12,6 +12,7 @@ from datetime import datetime
 
 from .base import DataAccess
 from firebase import get_firebase_client
+from utils.logger import get_audit_logger
 
 
 class FirebaseDataAccess(DataAccess):
@@ -38,9 +39,12 @@ class FirebaseDataAccess(DataAccess):
         self.db = self.client.get_firestore()
         self.storage = self.client.get_storage()
         self.user_id = user_id or "system"
+        self.audit_logger = get_audit_logger()
         
         if not self.db:
             raise RuntimeError("Firestore no está disponible. Verificar configuración de Firebase.")
+        
+        self.audit_logger.log_info("FirebaseDataAccess initialized", {"user_id": self.user_id})
     
     def _add_metadata(self, data: Dict[str, Any], is_update: bool = False) -> Dict[str, Any]:
         """Agrega metadatos de auditoría a un documento."""
@@ -235,8 +239,18 @@ class FirebaseDataAccess(DataAccess):
                 item_doc = self._add_metadata(dict(item))
                 items_ref.document(str(idx)).set(item_doc)
             
+            # Audit log
+            self.audit_logger.log_invoice_created(
+                invoice_id=invoice_id,
+                invoice_type=invoice_data.get('invoice_type', 'emitida'),
+                total=float(invoice_data.get('total_amount', 0)),
+                company_id=invoice_data.get('company_id'),
+                client=invoice_data.get('client_name')
+            )
+            
             return invoice_id
         except Exception as e:
+            self.audit_logger.log_error("add_invoice", e, {"invoice_data": invoice_data})
             print(f"[FIREBASE] Error adding invoice: {e}")
             raise
     
@@ -521,6 +535,10 @@ class FirebaseDataAccess(DataAccess):
         try:
             invoice_ref = self.db.collection('invoices').document(str(factura_id))
             
+            # Get invoice details before deleting for audit log
+            doc = invoice_ref.get()
+            invoice_data = doc.to_dict() if doc.exists else {}
+            
             # Eliminar ítems primero
             items_ref = invoice_ref.collection('items')
             for item_doc in items_ref.stream():
@@ -529,7 +547,15 @@ class FirebaseDataAccess(DataAccess):
             # Eliminar factura
             invoice_ref.delete()
             
+            # Audit log
+            self.audit_logger.log_delete('Invoice', factura_id, {
+                'type': invoice_data.get('invoice_type'),
+                'total': invoice_data.get('total_amount'),
+                'company_id': invoice_data.get('company_id')
+            })
+            
         except Exception as e:
+            self.audit_logger.log_error("delete_factura", e, {"factura_id": factura_id})
             print(f"[FIREBASE] Error deleting invoice {factura_id}: {e}")
             raise
     
@@ -537,6 +563,10 @@ class FirebaseDataAccess(DataAccess):
         """Elimina una cotización y sus ítems."""
         try:
             quotation_ref = self.db.collection('quotations').document(str(quotation_id))
+            
+            # Get quotation details before deleting for audit log
+            doc = quotation_ref.get()
+            quotation_data = doc.to_dict() if doc.exists else {}
             
             # Eliminar ítems primero
             items_ref = quotation_ref.collection('items')
@@ -546,7 +576,14 @@ class FirebaseDataAccess(DataAccess):
             # Eliminar cotización
             quotation_ref.delete()
             
+            # Audit log
+            self.audit_logger.log_delete('Quotation', quotation_id, {
+                'total': quotation_data.get('total_amount'),
+                'company_id': quotation_data.get('company_id')
+            })
+            
         except Exception as e:
+            self.audit_logger.log_error("delete_quotation", e, {"quotation_id": quotation_id})
             print(f"[FIREBASE] Error deleting quotation {quotation_id}: {e}")
             raise
     
@@ -569,8 +606,15 @@ class FirebaseDataAccess(DataAccess):
             for idx, item in enumerate(items):
                 item_doc = self._add_metadata(dict(item))
                 items_ref.document(str(idx)).set(item_doc)
+            
+            # Audit log
+            self.audit_logger.log_update('Quotation', quotation_id, {
+                'total': quotation_data.get('total_amount'),
+                'company_id': quotation_data.get('company_id')
+            })
                 
         except Exception as e:
+            self.audit_logger.log_error("update_quotation", e, {"quotation_id": quotation_id})
             print(f"[FIREBASE] Error updating quotation {quotation_id}: {e}")
             raise
     
