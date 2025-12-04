@@ -1,13 +1,43 @@
 # FACOT - Sistema de Gestión de Facturas y Cotizaciones
 
-![Versión](https://img.shields.io/badge/versión-2.3-blue.svg)
+![Versión](https://img.shields.io/badge/versión-2.4-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-green.svg)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-orange.svg)
-![Tests](https://img.shields.io/badge/tests-100%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
 
 ## 📋 Descripción
 
 FACOT es un sistema completo de gestión de facturas y cotizaciones diseñado para empresas en República Dominicana. El sistema ofrece una solución robusta para la administración de documentos fiscales, cumpliendo con las normativas de la DGII (Dirección General de Impuestos Internos).
+
+### 🚀 Novedades v2.4 - Dashboard Moderno y Backend Firebase-Only
+
+✨ **Dashboard Mejorado con Visualización de Datos**
+- Interfaz moderna tipo Tailwind CSS con diseño card-based
+- Gráfico interactivo de ingresos mensuales usando pyqtgraph
+- 4 tarjetas de resumen: Ingresos Totales, Facturas Pendientes, Cotizaciones, Clientes
+- Filtrado estricto de datos: solo ingresos (tipo "emitida"), excluye gastos
+- Actualización automática al crear/editar facturas
+
+✨ **Sistema de Auditoría Robusto**
+- Log centralizado de TODAS las operaciones CRUD con timestamps
+- Formato: `[timestamp] [level] Action | Details: {JSON}`
+- Ubicación: `~/.facot/logs/facot_audit.log`
+- Ejemplos de logs: 
+  - `[2025-12-04 10:00:00] [INFO] CREATE Invoice ID: 105 | Details: {"type": "EMITIDA", "total": "5000.00"}`
+  - `[2025-12-04 10:05:00] [WARNING] DELETE Invoice ID: 105`
+- Ver documentación completa en [AUDIT_LOGGING.md](AUDIT_LOGGING.md)
+
+✨ **Firebase-Only Backend (OBLIGATORIO)**
+- La aplicación ahora REQUIERE Firebase para funcionar
+- SQLite solo para herramientas de migración (no para runtime)
+- Configuración guiada al primer inicio
+- Prompt automático si Firebase no está configurado
+- Ver guía completa en [FIREBASE_BACKEND.md](FIREBASE_BACKEND.md)
+
+✨ **Constantes de Tipo de Factura**
+- `INGRESO_TYPES = ["emitida"]` - Facturas de ingreso/ventas
+- `EXPENSE_TYPES = ["gasto"]` - Facturas de gasto
+- Filtrado consistente en todo el sistema
 
 ### 🆕 Novedades v2.3 - UI Mejorada
 

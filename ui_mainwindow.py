@@ -132,6 +132,14 @@ class MainWindow(QMainWindow):
         self._detect_and_set_connection_mode()
 
     def _init_db(self):
+        """
+        Initialize database connection.
+        
+        FIREBASE-FIRST POLICY:
+        - SQLite is initialized only for backwards compatibility and migration tools
+        - Main runtime MUST use Firebase for data operations
+        - If Firebase is not configured, user is prompted to configure it
+        """
         db_path = facot_config.get_db_path()
         if not db_path or not os.path.isfile(db_path):
             filename, _ = QFileDialog.getOpenFileName(self, "Selecciona tu archivo de base de datos", "", "Database Files (*.db);;Todos los archivos (*)")
@@ -140,34 +148,120 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Error", "No se seleccionó una base de datos. El programa se cerrará.")
                 sys.exit(1)
+        
+        # Initialize SQLite (for migration tools and backwards compatibility only)
         self.logic = LogicController(db_path)
         
-        # Initialize data_access with preferred mode from config
+        # ===== FIREBASE-ONLY ENFORCEMENT =====
+        # The application now REQUIRES Firebase for main runtime operations
+        firebase_initialized = False
+        firebase_error = None
+        
         try:
             from data_access import get_data_access, DataAccessMode
-            from config_facot import get_connection_mode
+            from firebase import get_firebase_client
             
-            # Cargar modo preferido de configuración
-            preferred_mode = get_connection_mode()  # "SQLITE", "FIREBASE", or "AUTO"
-            print(f"[MAIN] Modo de conexión preferido: {preferred_mode}")
+            # Check if Firebase is available
+            firebase_client = get_firebase_client()
+            if not firebase_client.is_available():
+                raise RuntimeError(
+                    "Firebase no está configurado. La aplicación requiere Firebase para funcionar.\n\n"
+                    "Por favor, configure Firebase desde: Herramientas > Configurar Firebase..."
+                )
             
-            # Convertir a DataAccessMode enum
-            mode_enum = DataAccessMode[preferred_mode]
+            # Force FIREBASE mode (no AUTO fallback to SQLite)
+            print(f"[MAIN] Enforcing FIREBASE-ONLY mode")
+            self.data_access = get_data_access(user_id=None, mode=DataAccessMode.FIREBASE)
+            self.current_access_mode = "FIREBASE"
+            firebase_initialized = True
             
-            # Inicializar data_access con el modo preferido
-            self.data_access = get_data_access(logic_controller=self.logic, mode=mode_enum)
-            self.current_access_mode = preferred_mode
-            
-            # Crear wrapper híbrido que combina logic y data_access
+            # Create hybrid wrapper with Firebase as primary
             self.hybrid_logic = HybridLogicWrapper(self.logic, self.data_access)
-            print(f"[MAIN] Created hybrid logic wrapper")
+            print(f"[MAIN] Firebase initialized successfully - using Firebase for all data operations")
             
         except Exception as e:
-            print(f"[MAIN] Warning: Could not initialize data_access: {e}")
-            self.data_access = None
-            self.current_access_mode = "SQLITE"
-            # Wrapper solo con logic
-            self.hybrid_logic = HybridLogicWrapper(self.logic, None)
+            firebase_error = str(e)
+            print(f"[MAIN] ERROR: Firebase initialization failed: {e}")
+            
+            # Show error dialog with option to configure
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Firebase Requerido")
+            msg.setText(
+                "La aplicación requiere Firebase para funcionar.\n\n"
+                f"Error: {firebase_error}\n\n"
+                "¿Desea configurar Firebase ahora?"
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | 
+                QMessageBox.StandardButton.No
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+            
+            result = msg.exec()
+            
+            if result == QMessageBox.StandardButton.Yes:
+                # Open Firebase configuration dialog
+                try:
+                    from dialogs.firebase_config_dialog import FirebaseConfigDialog
+                    config_dialog = FirebaseConfigDialog(self)
+                    if config_dialog.exec():
+                        # Try to initialize Firebase again
+                        try:
+                            firebase_client = get_firebase_client()
+                            self.data_access = get_data_access(user_id=None, mode=DataAccessMode.FIREBASE)
+                            self.current_access_mode = "FIREBASE"
+                            firebase_initialized = True
+                            self.hybrid_logic = HybridLogicWrapper(self.logic, self.data_access)
+                            QMessageBox.information(
+                                self,
+                                "Firebase Configurado",
+                                "Firebase se ha configurado correctamente.\n"
+                                "La aplicación ahora usará Firebase para todas las operaciones."
+                            )
+                        except Exception as retry_error:
+                            QMessageBox.critical(
+                                self,
+                                "Error",
+                                f"Firebase sigue sin estar disponible:\n{retry_error}\n\n"
+                                "La aplicación se cerrará."
+                            )
+                            sys.exit(1)
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Configuración Cancelada",
+                            "Firebase no fue configurado. La aplicación se cerrará."
+                        )
+                        sys.exit(1)
+                except ImportError as import_error:
+                    QMessageBox.critical(
+                        self,
+                        "Error",
+                        f"No se pudo abrir el diálogo de configuración:\n{import_error}\n\n"
+                        "La aplicación se cerrará."
+                    )
+                    sys.exit(1)
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Firebase Requerido",
+                    "La aplicación requiere Firebase para funcionar.\n"
+                    "La aplicación se cerrará."
+                )
+                sys.exit(1)
+        
+        # Final check: Ensure Firebase is initialized
+        if not firebase_initialized:
+            QMessageBox.critical(
+                self,
+                "Error Fatal",
+                "No se pudo inicializar Firebase.\n"
+                "La aplicación no puede continuar."
+            )
+            sys.exit(1)
+        
+        print(f"[MAIN] Database initialization complete - Mode: {self.current_access_mode}")
 
     def _setup_ui(self):
         """
