@@ -149,8 +149,9 @@ class SalesChart(QFrame):
             self.plot_widget.setLabel('bottom', 'Mes')
             
             # Configure axes
+            current_year = datetime.now().year
             ax = self.plot_widget.getAxis('bottom')
-            ax.setTicks([[(i, datetime(2024, i, 1).strftime('%b')) for i in range(1, 13)]])
+            ax.setTicks([[(i, datetime(current_year, i, 1).strftime('%b')) for i in range(1, 13)]])
             
             layout.addWidget(self.plot_widget, 1)
         else:
@@ -199,7 +200,12 @@ class SalesChart(QFrame):
         
         # Set reasonable y-axis range
         max_sale = max(sales) if sales else 0
-        self.plot_widget.setYRange(0, max_sale * 1.1 if max_sale > 0 else 100)
+        if max_sale > 0:
+            # If there's any non-zero data, scale to show it nicely
+            self.plot_widget.setYRange(0, max_sale * 1.1)
+        else:
+            # All sales are zero or no data - use a default range
+            self.plot_widget.setYRange(0, 1000)
         self.plot_widget.setXRange(0, 13)
 
 

@@ -131,6 +131,32 @@ class MainWindow(QMainWindow):
         self._check_online_status()
         self._detect_and_set_connection_mode()
 
+    def _initialize_firebase(self):
+        """
+        Helper method to initialize Firebase data access.
+        
+        Returns:
+            bool: True if Firebase was successfully initialized, False otherwise
+        """
+        try:
+            from data_access import get_data_access, DataAccessMode
+            from firebase import get_firebase_client
+            
+            # Get or refresh Firebase client
+            firebase_client = get_firebase_client()
+            
+            # Force FIREBASE mode (no AUTO fallback to SQLite)
+            self.data_access = get_data_access(user_id=None, mode=DataAccessMode.FIREBASE)
+            self.current_access_mode = "FIREBASE"
+            
+            # Create hybrid wrapper with Firebase as primary
+            self.hybrid_logic = HybridLogicWrapper(self.logic, self.data_access)
+            
+            return True
+        except Exception as e:
+            print(f"[MAIN] Firebase initialization failed: {e}")
+            return False
+    
     def _init_db(self):
         """
         Initialize database connection.
@@ -158,7 +184,6 @@ class MainWindow(QMainWindow):
         firebase_error = None
         
         try:
-            from data_access import get_data_access, DataAccessMode
             from firebase import get_firebase_client
             
             # Check if Firebase is available
@@ -169,15 +194,14 @@ class MainWindow(QMainWindow):
                     "Por favor, configure Firebase desde: Herramientas > Configurar Firebase..."
                 )
             
-            # Force FIREBASE mode (no AUTO fallback to SQLite)
+            # Initialize Firebase using helper method
             print(f"[MAIN] Enforcing FIREBASE-ONLY mode")
-            self.data_access = get_data_access(user_id=None, mode=DataAccessMode.FIREBASE)
-            self.current_access_mode = "FIREBASE"
-            firebase_initialized = True
+            firebase_initialized = self._initialize_firebase()
             
-            # Create hybrid wrapper with Firebase as primary
-            self.hybrid_logic = HybridLogicWrapper(self.logic, self.data_access)
-            print(f"[MAIN] Firebase initialized successfully - using Firebase for all data operations")
+            if firebase_initialized:
+                print(f"[MAIN] Firebase initialized successfully - using Firebase for all data operations")
+            else:
+                raise RuntimeError("Failed to initialize Firebase")
             
         except Exception as e:
             firebase_error = str(e)
@@ -206,24 +230,21 @@ class MainWindow(QMainWindow):
                     from dialogs.firebase_config_dialog import FirebaseConfigDialog
                     config_dialog = FirebaseConfigDialog(self)
                     if config_dialog.exec():
-                        # Try to initialize Firebase again
-                        try:
-                            firebase_client = get_firebase_client()
-                            self.data_access = get_data_access(user_id=None, mode=DataAccessMode.FIREBASE)
-                            self.current_access_mode = "FIREBASE"
-                            firebase_initialized = True
-                            self.hybrid_logic = HybridLogicWrapper(self.logic, self.data_access)
+                        # Try to initialize Firebase again using helper method
+                        firebase_initialized = self._initialize_firebase()
+                        
+                        if firebase_initialized:
                             QMessageBox.information(
                                 self,
                                 "Firebase Configurado",
                                 "Firebase se ha configurado correctamente.\n"
                                 "La aplicación ahora usará Firebase para todas las operaciones."
                             )
-                        except Exception as retry_error:
+                        else:
                             QMessageBox.critical(
                                 self,
                                 "Error",
-                                f"Firebase sigue sin estar disponible:\n{retry_error}\n\n"
+                                "Firebase sigue sin estar disponible.\n\n"
                                 "La aplicación se cerrará."
                             )
                             sys.exit(1)
