@@ -103,7 +103,10 @@ class LogicController:
     
     def get_company_invoice_due_date(self, company_id: int) -> str:
         if self.data_access:
-            # Si FirebaseDataAccess tiene el método específico, úsalo
+            # Si FirebaseDataAccess tiene get_company_due_date, úsalo
+            if hasattr(self.data_access, 'get_company_due_date'):
+                return self.data_access.get_company_due_date(company_id)
+            # Fallback a get_company_invoice_due_date si existe
             if hasattr(self.data_access, 'get_company_invoice_due_date'):
                 return self.data_access.get_company_invoice_due_date(company_id)
             # Fallback genérico
@@ -298,9 +301,17 @@ class LogicController:
             self.data_access.set_ncf_last_seq(company_id, prefix, last_seq)
 
     def get_ncf_preview(self, company_id: int, prefix3: str) -> str:
+        """Obtiene preview del próximo NCF SIN consumir la secuencia."""
+        if self.data_access and hasattr(self.data_access, 'get_ncf_preview'):
+            return self.data_access.get_ncf_preview(company_id, prefix3)
+        # Fallback: usar get_next_ncf (que ahora es allocate)
         return self.get_next_ncf(company_id, prefix3)
 
     def allocate_next_ncf(self, company_id: int, prefix3: str) -> str:
+        """Asigna y consume el siguiente NCF (transaccional)."""
+        if self.data_access and hasattr(self.data_access, 'allocate_next_ncf'):
+            return self.data_access.allocate_next_ncf(company_id, prefix3)
+        # Fallback: usar get_next_ncf
         return self.get_next_ncf(company_id, prefix3)
 
     # -------------------------

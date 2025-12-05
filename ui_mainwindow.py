@@ -790,14 +790,6 @@ class MainWindow(QMainWindow):
         dialog = MigrationDialog(self)
         dialog.exec()
     
-    def _abrir_configuracion_ncf(self):
-        """Abre el diálogo de configuración de secuencias NCF"""
-        from dialogs.ncf_config_dialog import NCFConfigDialog
-        
-        # PASAR EL BACKEND CORRECTO (híbrido si existe)
-        backend = self.hybrid_logic if self.hybrid_logic else self.logic
-        dialog = NCFConfigDialog(backend, self)
-        dialog.exec()
 
     # --------- Empresas ----------
     def _populate_companies(self):
@@ -1079,3 +1071,19 @@ class MainWindow(QMainWindow):
                 f"Error al verificar Firebase:\n{str(e)}\n\n"
                 "La aplicación usará SQLite como fallback."
             )
+
+    def _abrir_configuracion_ncf(self):
+        """Abre el diálogo de configuración de secuencias NCF"""
+        from dialogs.ncf_config_dialog import NCFConfigDialog
+        
+        # PASAR EL BACKEND CORRECTO (híbrido si existe)
+        backend = self.hybrid_logic if self.hybrid_logic else self.logic
+        dialog = NCFConfigDialog(backend, self)
+        result = dialog.exec()
+        # Si el usuario guardó/aceptó, refrescar inmediatamente en InvoiceTab:
+        try:
+            if result == 1:  # Accepted
+                if hasattr(self, "invoice_tab") and hasattr(self.invoice_tab, "refresh_after_ncf_config"):
+                    self.invoice_tab.refresh_after_ncf_config()
+        except Exception as e:
+            print(f"[MAIN] Error al refrescar InvoiceTab tras NCFConfig: {e}")
