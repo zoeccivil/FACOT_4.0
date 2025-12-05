@@ -244,8 +244,6 @@ class QuotationPreviewDialog(QDialog):
         template_path: str = "quotation_template.html",  # ajustado a la ubicación real del repo
         parent=None,
         debug: bool = False,
-        logic=None,
-        quotation_id: Optional[Any] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Vista previa - Cotización")
@@ -254,8 +252,6 @@ class QuotationPreviewDialog(QDialog):
         self.raw_company = company or {}
         self.raw_template = template or {}
         self.raw_quotation = quotation or {}
-        self.logic = logic
-        self.quotation_id = quotation_id
 
         print("\n" + "=" * 80)
         print("[QUOTATION_PREVIEW_DIALOG] PAYLOAD RECIBIDO:")
@@ -515,8 +511,6 @@ class QuotationPreviewDialog(QDialog):
         def finish_with_message(ok: bool, msg: str = None):
             self.btn_export_pdf.setEnabled(True)
             if ok:
-                # Upload PDF to Firebase Storage if logic and quotation_id are available
-                self._upload_pdf_to_storage(save_path)
                 QMessageBox.information(self, "PDF", f"PDF generado:\n{save_path}")
             else:
                 QMessageBox.warning(self, "PDF", msg or "No se pudo generar el PDF o está vacío.")
@@ -791,70 +785,3 @@ class QuotationPreviewDialog(QDialog):
         _ensure_units(quotation, logic_controller=logic_ctrl)
 
         return company, tpl, quotation
-
-    def _upload_pdf_to_storage(self, local_pdf_path: str):
-        """
-        Sube el PDF de cotización a Firebase Storage y guarda metadatos en Firestore.
-        
-        Args:
-            local_pdf_path: Ruta local del PDF guardado
-        """
-        # Verificar que tenemos logic y quotation_id
-        if not self.logic or not self.quotation_id:
-            print("[PDF-UPLOAD] No se puede subir: falta logic o quotation_id")
-            return
-        
-        # Verificar que logic tiene los métodos necesarios
-        if not hasattr(self.logic, 'upload_file_to_storage') or not hasattr(self.logic, 'set_quotation_pdf_info'):
-            print("[PDF-UPLOAD] Backend no soporta upload_file_to_storage o set_quotation_pdf_info")
-            return
-        
-        try:
-            import re
-            from datetime import datetime
-            
-            # Obtener datos para construir la ruta
-            company = self.raw_company
-            quotation = self.raw_quotation
-            
-            # Sanitizar nombre de empresa (solo alfanuméricos, guiones y guiones bajos)
-            company_name = company.get('name', 'empresa')
-            company_name_sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', company_name).strip('_')
-            
-            # Obtener fecha de la cotización para año/mes
-            quotation_date_str = quotation.get('quotation_date') or quotation.get('date') or datetime.now().isoformat()
-            try:
-                if isinstance(quotation_date_str, str):
-                    quotation_date = datetime.fromisoformat(quotation_date_str.replace('Z', '+00:00'))
-                else:
-                    quotation_date = datetime.now()
-            except:
-                quotation_date = datetime.now()
-            
-            year = quotation_date.year
-            month = quotation_date.month
-            
-            # Obtener número de cotización para el nombre del archivo
-            quot_number = quotation.get('quotation_number') or quotation.get('display_number') or str(self.quotation_id)
-            # Sanitizar nombre de archivo
-            quot_number_sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', str(quot_number))
-            
-            # Construir ruta en Storage: cotizacion/empresa_nombre/año/mes/numero.pdf
-            storage_path = f"cotizacion/{company_name_sanitized}/{year}/{month:02d}/{quot_number_sanitized}.pdf"
-            
-            print(f"[PDF-UPLOAD] Subiendo {local_pdf_path} a {storage_path}...")
-            
-            # Subir a Storage
-            url = self.logic.upload_file_to_storage(local_pdf_path, storage_path)
-            
-            if url:
-                # Guardar metadatos en Firestore
-                self.logic.set_quotation_pdf_info(self.quotation_id, storage_path, url)
-                print(f"[PDF-UPLOAD] PDF subido exitosamente para quotation_id={self.quotation_id}")
-            else:
-                print(f"[PDF-UPLOAD] No se pudo obtener URL para quotation_id={self.quotation_id}")
-        
-        except Exception as e:
-            print(f"[PDF-UPLOAD] Error subiendo PDF: {e}")
-            import traceback
-            traceback.print_exc()

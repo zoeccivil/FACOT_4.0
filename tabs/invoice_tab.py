@@ -301,8 +301,10 @@ class InvoiceTab(QWidget):
         try:
             if hasattr(self.logic, "get_ncf_preview"):
                 preview = self.logic.get_ncf_preview(int(company['id']), prefix3)
+                print(f"[ITAB-NCF-PREVIEW] company_id={company['id']}, prefix3={prefix3}, preview={preview}")
             elif hasattr(self.logic, "get_next_ncf"):
                 preview = self.logic.get_next_ncf(int(company['id']), prefix3)
+                print(f"[ITAB-NCF-PREVIEW] company_id={company['id']}, prefix3={prefix3}, preview={preview} (via get_next_ncf)")
         except Exception as e:
             print(f"[NCF] Error preview: {e}")
         preview = self._dedupe_ncf(preview, prefix3)
@@ -313,11 +315,22 @@ class InvoiceTab(QWidget):
         if not comp:
             QMessageBox.warning(self, "NCF", "Seleccione una empresa."); return
         prefix3 = self._category_prefix()
+        
+        # Obtener el valor antes (para logging)
+        before_ncf = ""
+        try:
+            if hasattr(self.logic, "get_ncf_preview"):
+                before_ncf = self.logic.get_ncf_preview(int(comp['id']), prefix3)
+        except Exception as e:
+            print(f"[ITAB-NCF-ALLOC] Error obteniendo preview: {e}")
+        
         try:
             if hasattr(self.logic, "allocate_next_ncf"):
                 next_ncf = self.logic.allocate_next_ncf(int(comp['id']), prefix3)
+                print(f"[ITAB-NCF-ALLOC] company_id={comp['id']}, prefix3={prefix3}, before={before_ncf}, after={next_ncf}, assigned={next_ncf}")
             else:
                 next_ncf = self.logic.get_next_ncf(int(comp['id']), prefix3)
+                print(f"[ITAB-NCF-ALLOC] company_id={comp['id']}, prefix3={prefix3}, assigned={next_ncf} (via get_next_ncf)")
             next_ncf = self._dedupe_ncf(next_ncf, prefix3)
             self.ncf_number_edit.setText(next_ncf)
         except Exception as e:
@@ -566,9 +579,7 @@ class InvoiceTab(QWidget):
             invoice=invoice_data,
             parent=self,
             template_path=template_path,
-            debug=False,
-            logic=self.logic,
-            invoice_id=None  # Will be set after saving to DB
+            debug=False
         )
         dlg.exec()
 
@@ -933,73 +944,6 @@ class InvoiceTab(QWidget):
             logger.exception("Error al cargar factura: %s", e)
             QMessageBox.critical(self, "Error", f"No se pudo cargar la factura:\n{str(e)}")
 
-    def on_company_change(self):
-        try: self.suggestion_combo.hide()
-        except Exception: pass
-        self._clear_invoice_form()
-        self.refresh_company_due_date()
-        self._update_ncf_sequence()
-
-    # -------------------------
-    # Refrescos públicos (NCF y Due Date)
-    # -------------------------
-    def refresh_company_due_date(self):
-        """
-        Refresca el vencimiento fijo (invoice_due_date) desde el backend.
-        Lee la configuración de vencimiento de la empresa actual y actualiza el widget.
-        
-        Logs: [ITAB-DUE] Refresh from backend for company_id=... -> YYYY-MM-DD
-        """
-        try:
-            company = self.get_current_company()
-            if not company:
-                print("[ITAB-DUE] No hay empresa seleccionada")
-                return
-            
-            company_id = company.get('id') or company.get('company_id')
-            if not company_id:
-                print("[ITAB-DUE] Empresa sin ID")
-                return
-            
-            # Obtener invoice_due_date desde backend
-            due_date = None
-            
-            # Primero intentar desde company data
-            due_date = company.get('invoice_due_date')
-            
-            # Si no está en company, intentar obtener company details actualizado
-            if not due_date and hasattr(self.logic, 'get_company_details'):
-                try:
-                    company_details = self.logic.get_company_details(company_id)
-                    if company_details:
-                        due_date = company_details.get('invoice_due_date')
-                except Exception as e:
-                    print(f"[ITAB-DUE] Error obteniendo detalles de empresa: {e}")
-            
-            # Aplicar al widget si hay fecha
-            if due_date:
-                due_date_str = str(due_date).strip()
-                print(f"[ITAB-DUE] Refresh from backend for company_id={company_id} -> {due_date_str}")
-                self._set_invoice_due_date_widget(due_date_str)
-            else:
-                print(f"[ITAB-DUE] No hay invoice_due_date configurado para company_id={company_id}")
-                # Aplicar vencimiento por defecto
-                self._apply_default_due_date()
-        
-        except Exception as e:
-            print(f"[ITAB-DUE] Error refrescando due date: {e}")
-
-    def refresh_after_ncf_config(self):
-        """
-        Refresca NCF preview y vencimiento después de guardar configuración NCF.
-        Llamado desde ui_mainwindow.py después de cerrar NCFConfigDialog con Accepted.
-        
-        Logs: [ITAB-NCF-PREVIEW] y [ITAB-DUE]
-        """
-        print("[ITAB-NCF-PREVIEW] Refrescando NCF y vencimiento tras configuración...")
-        self._update_ncf_sequence()
-        self.refresh_company_due_date()
-
     # -------------------------
     # Direcciones / vencimiento fijo
     # -------------------------
@@ -1065,3 +1009,56 @@ class InvoiceTab(QWidget):
                 except Exception: pass
                 break
             p = p.parent(); safety += 1
+
+    def refresh_company_due_date(self):
+        """Lee el vencimiento fijo desde backend y lo aplica al widget con logs."""
+        try:
+            company = self.get_current_company()
+            if not company:
+                return
+            cid = int(company.get('id'))
+            due = ""
+            # Preferir métodos dedicados si existen: LogicController ya delega al backend
+            if hasattr(self.logic, "get_company_due_date"):
+                due = self.logic.get_company_due_date(cid) or ""
+            elif hasattr(self.logic, "get_company_invoice_due_date"):
+                due = self.logic.get_company_invoice_due_date(cid) or ""
+            # Aplica al widget
+            if due:
+                self._set_invoice_due_date_widget(due)
+            else:
+                # Si está vacío, deja la fecha según la política actual
+                # o limpia explícitamente si prefieres
+                # self.invoice_due_date.setDate(QDate.currentDate())
+                pass
+            print(f"[ITAB-DUE] Refresh from backend for company_id={cid} -> {due or '(empty)'}")
+        except Exception as e:
+            print(f"[ITAB-DUE] Error refreshing due date: {e}")
+
+    def refresh_after_ncf_config(self):
+        """
+        Refresca datos sensibles tras cerrar/guardar NCFConfigDialog:
+        - NCF preview para la empresa seleccionada
+        - Vencimiento fijo (invoice_due_date) leído desde backend
+        """
+        try:
+            self._update_ncf_sequence()
+        except Exception as e:
+            print(f"[ITAB] Error refreshing NCF after config: {e}")
+        try:
+            self.refresh_company_due_date()
+        except Exception as e:
+            print(f"[ITAB] Error refreshing due date after config: {e}")
+
+    def on_company_change(self):
+        try: self.suggestion_combo.hide()
+        except Exception: pass
+        self._clear_invoice_form()
+        self._apply_default_due_date()
+        # Primero trae vencimiento fijo desde backend y lo aplica
+        try:
+            self.refresh_company_due_date()
+        except Exception:
+            pass
+        # Luego actualiza secuencia NCF
+        self._update_ncf_sequence()
