@@ -421,6 +421,8 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 parent=self,
                 template_path=template_path,
                 debug=False,
+                logic=self.logic,
+                invoice_id=None  # Will be quotation_id after saving
             )
             dlg.exec()
         except Exception as e:

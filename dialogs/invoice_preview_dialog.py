@@ -303,6 +303,8 @@ class InvoicePreviewDialog(QDialog):
         template_path: str = "templates/invoice_template.html",
         parent=None,
         debug: bool = False,
+        logic=None,
+        invoice_id: Optional[Any] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Vista previa - Factura")
@@ -313,6 +315,8 @@ class InvoicePreviewDialog(QDialog):
         self.raw_invoice = invoice or {}
         self.template_path = template_path
         self.debug = bool(debug)
+        self.logic = logic
+        self.invoice_id = invoice_id
 
         self._last_payload: Dict[str, Any] = {}
 
@@ -569,6 +573,8 @@ class InvoicePreviewDialog(QDialog):
         def finish_with_message(ok: bool, msg: str = None):
             self.btn_export_pdf.setEnabled(True)
             if ok:
+                # Upload PDF to Firebase Storage if logic and invoice_id are available
+                self._upload_pdf_to_storage(save_path)
                 QMessageBox.information(self, "PDF", f"PDF generado:\n{save_path}")
             else:
                 QMessageBox.warning(self, "PDF", msg or "No se pudo generar el PDF o está vacío.")
@@ -789,3 +795,70 @@ class InvoicePreviewDialog(QDialog):
             QMessageBox.information(self, "Excel", f"Archivo Excel generado:\n{save_path}")
         except Exception as e:
             QMessageBox.warning(self, "Excel", f"No se pudo generar el Excel:\n{e}")
+
+    def _upload_pdf_to_storage(self, local_pdf_path: str):
+        """
+        Sube el PDF a Firebase Storage y guarda metadatos en Firestore.
+        
+        Args:
+            local_pdf_path: Ruta local del PDF guardado
+        """
+        # Verificar que tenemos logic y invoice_id
+        if not self.logic or not self.invoice_id:
+            print("[PDF-UPLOAD] No se puede subir: falta logic o invoice_id")
+            return
+        
+        # Verificar que logic tiene los métodos necesarios
+        if not hasattr(self.logic, 'upload_file_to_storage') or not hasattr(self.logic, 'set_invoice_pdf_info'):
+            print("[PDF-UPLOAD] Backend no soporta upload_file_to_storage o set_invoice_pdf_info")
+            return
+        
+        try:
+            import re
+            from datetime import datetime
+            
+            # Obtener datos para construir la ruta
+            company = self.raw_company
+            invoice = self.raw_invoice
+            
+            # Sanitizar nombre de empresa (solo alfanuméricos, guiones y guiones bajos)
+            company_name = company.get('name', 'empresa')
+            company_name_sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', company_name).strip('_')
+            
+            # Obtener fecha de la factura para año/mes
+            invoice_date_str = invoice.get('invoice_date') or invoice.get('date') or datetime.now().isoformat()
+            try:
+                if isinstance(invoice_date_str, str):
+                    invoice_date = datetime.fromisoformat(invoice_date_str.replace('Z', '+00:00'))
+                else:
+                    invoice_date = datetime.now()
+            except:
+                invoice_date = datetime.now()
+            
+            year = invoice_date.year
+            month = invoice_date.month
+            
+            # Obtener NCF o número de factura para el nombre del archivo
+            ncf_or_number = invoice.get('invoice_number') or invoice.get('ncf') or invoice.get('display_number') or str(self.invoice_id)
+            # Sanitizar nombre de archivo
+            ncf_or_number_sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', str(ncf_or_number))
+            
+            # Construir ruta en Storage: factura/empresa_nombre/año/mes/ncf.pdf
+            storage_path = f"factura/{company_name_sanitized}/{year}/{month:02d}/{ncf_or_number_sanitized}.pdf"
+            
+            print(f"[PDF-UPLOAD] Subiendo {local_pdf_path} a {storage_path}...")
+            
+            # Subir a Storage
+            url = self.logic.upload_file_to_storage(local_pdf_path, storage_path)
+            
+            if url:
+                # Guardar metadatos en Firestore
+                self.logic.set_invoice_pdf_info(self.invoice_id, storage_path, url)
+                print(f"[PDF-UPLOAD] PDF subido exitosamente para invoice_id={self.invoice_id}")
+            else:
+                print(f"[PDF-UPLOAD] No se pudo obtener URL para invoice_id={self.invoice_id}")
+        
+        except Exception as e:
+            print(f"[PDF-UPLOAD] Error subiendo PDF: {e}")
+            import traceback
+            traceback.print_exc()

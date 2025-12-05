@@ -672,6 +672,106 @@ class FirebaseDataAccess(DataAccess):
                 return fallback_local_path
             return None
 
+    # ===== PDF UPLOAD TO STORAGE =====
+
+    def upload_file_to_storage(self, local_path: str, storage_path: str) -> Optional[str]:
+        """
+        Sube un archivo a Firebase Storage y devuelve la URL pública o firmada.
+        
+        Args:
+            local_path: Ruta local del archivo a subir
+            storage_path: Ruta en Storage (ej: "factura/empresa/2025/12/B01001.pdf")
+        
+        Returns:
+            URL pública o firmada del archivo, o None si falla
+        
+        Logs:
+            [PDF-UPLOAD] storage_path=..., url=...
+        """
+        if not self.storage:
+            print("[PDF-UPLOAD] ERROR: Storage no disponible")
+            return None
+        
+        if not os.path.exists(local_path):
+            print(f"[PDF-UPLOAD] ERROR: Archivo local no existe: {local_path}")
+            return None
+        
+        try:
+            # Subir archivo a Storage
+            blob = self.storage.blob(storage_path)
+            
+            # Detectar content type
+            _, ext = os.path.splitext(local_path)
+            content_type = "application/pdf" if ext.lower() == ".pdf" else "application/octet-stream"
+            
+            blob.upload_from_filename(local_path, content_type=content_type)
+            
+            # Intentar hacer público
+            url = None
+            try:
+                blob.make_public()
+                url = blob.public_url
+                print(f"[PDF-UPLOAD] storage_path={storage_path}, url={url} (público)")
+            except Exception as e:
+                # Fallback: generar URL firmada (válida por 1 año)
+                print(f"[PDF-UPLOAD] No se pudo hacer público, usando URL firmada: {e}")
+                try:
+                    url = blob.generate_signed_url(version="v4", expiration=3600*24*365, method="GET")
+                    print(f"[PDF-UPLOAD] storage_path={storage_path}, url={url} (firmada)")
+                except Exception as e2:
+                    print(f"[PDF-UPLOAD] ERROR generando URL firmada: {e2}")
+                    return None
+            
+            return url
+        
+        except Exception as e:
+            print(f"[PDF-UPLOAD] ERROR subiendo archivo: {e}")
+            return None
+
+    def set_invoice_pdf_info(self, invoice_id: Any, storage_path: str, url: str) -> None:
+        """
+        Guarda metadatos de PDF en documento de factura (merge).
+        
+        Args:
+            invoice_id: ID de la factura
+            storage_path: Ruta en Storage
+            url: URL del PDF (pública o firmada)
+        """
+        try:
+            invoice_ref = self.db.collection('invoices').document(str(invoice_id))
+            invoice_ref.set({
+                'pdf_storage_path': storage_path,
+                'pdf_url': url,
+                'updated_at': datetime.utcnow().isoformat(),
+                'updated_by': self.user_id
+            }, merge=True)
+            print(f"[PDF-UPLOAD] Metadatos guardados en invoice {invoice_id}: path={storage_path}")
+        except Exception as e:
+            print(f"[PDF-UPLOAD] ERROR guardando metadatos de factura {invoice_id}: {e}")
+            raise
+
+    def set_quotation_pdf_info(self, quotation_id: Any, storage_path: str, url: str) -> None:
+        """
+        Guarda metadatos de PDF en documento de cotización (merge).
+        
+        Args:
+            quotation_id: ID de la cotización
+            storage_path: Ruta en Storage
+            url: URL del PDF (pública o firmada)
+        """
+        try:
+            quotation_ref = self.db.collection('quotations').document(str(quotation_id))
+            quotation_ref.set({
+                'pdf_storage_path': storage_path,
+                'pdf_url': url,
+                'updated_at': datetime.utcnow().isoformat(),
+                'updated_by': self.user_id
+            }, merge=True)
+            print(f"[PDF-UPLOAD] Metadatos guardados en quotation {quotation_id}: path={storage_path}")
+        except Exception as e:
+            print(f"[PDF-UPLOAD] ERROR guardando metadatos de cotización {quotation_id}: {e}")
+            raise
+
     def commit(self) -> None:
         pass
 

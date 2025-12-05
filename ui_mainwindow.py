@@ -797,7 +797,17 @@ class MainWindow(QMainWindow):
         # PASAR EL BACKEND CORRECTO (híbrido si existe)
         backend = self.hybrid_logic if self.hybrid_logic else self.logic
         dialog = NCFConfigDialog(backend, self)
-        dialog.exec()
+        result = dialog.exec()
+        
+        # Si se aceptaron cambios, refrescar InvoiceTab
+        if result == 1:  # QDialog.Accepted
+            try:
+                if hasattr(self, 'invoice_tab') and hasattr(self.invoice_tab, 'refresh_after_ncf_config'):
+                    self.invoice_tab.refresh_after_ncf_config()
+                    print("[MAINWINDOW] NCFConfigDialog cerrado con Accepted - InvoiceTab refrescado")
+            except Exception as e:
+                print(f"[MAINWINDOW] Error refrescando InvoiceTab tras NCFConfigDialog: {e}")
+
 
     # --------- Empresas ----------
     def _populate_companies(self):

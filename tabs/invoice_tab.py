@@ -566,7 +566,9 @@ class InvoiceTab(QWidget):
             invoice=invoice_data,
             parent=self,
             template_path=template_path,
-            debug=False
+            debug=False,
+            logic=self.logic,
+            invoice_id=None  # Will be set after saving to DB
         )
         dlg.exec()
 
@@ -935,8 +937,68 @@ class InvoiceTab(QWidget):
         try: self.suggestion_combo.hide()
         except Exception: pass
         self._clear_invoice_form()
-        self._apply_default_due_date()
+        self.refresh_company_due_date()
         self._update_ncf_sequence()
+
+    # -------------------------
+    # Refrescos públicos (NCF y Due Date)
+    # -------------------------
+    def refresh_company_due_date(self):
+        """
+        Refresca el vencimiento fijo (invoice_due_date) desde el backend.
+        Lee la configuración de vencimiento de la empresa actual y actualiza el widget.
+        
+        Logs: [ITAB-DUE] Refresh from backend for company_id=... -> YYYY-MM-DD
+        """
+        try:
+            company = self.get_current_company()
+            if not company:
+                print("[ITAB-DUE] No hay empresa seleccionada")
+                return
+            
+            company_id = company.get('id') or company.get('company_id')
+            if not company_id:
+                print("[ITAB-DUE] Empresa sin ID")
+                return
+            
+            # Obtener invoice_due_date desde backend
+            due_date = None
+            
+            # Primero intentar desde company data
+            due_date = company.get('invoice_due_date')
+            
+            # Si no está en company, intentar obtener company details actualizado
+            if not due_date and hasattr(self.logic, 'get_company_details'):
+                try:
+                    company_details = self.logic.get_company_details(company_id)
+                    if company_details:
+                        due_date = company_details.get('invoice_due_date')
+                except Exception as e:
+                    print(f"[ITAB-DUE] Error obteniendo detalles de empresa: {e}")
+            
+            # Aplicar al widget si hay fecha
+            if due_date:
+                due_date_str = str(due_date).strip()
+                print(f"[ITAB-DUE] Refresh from backend for company_id={company_id} -> {due_date_str}")
+                self._set_invoice_due_date_widget(due_date_str)
+            else:
+                print(f"[ITAB-DUE] No hay invoice_due_date configurado para company_id={company_id}")
+                # Aplicar vencimiento por defecto
+                self._apply_default_due_date()
+        
+        except Exception as e:
+            print(f"[ITAB-DUE] Error refrescando due date: {e}")
+
+    def refresh_after_ncf_config(self):
+        """
+        Refresca NCF preview y vencimiento después de guardar configuración NCF.
+        Llamado desde ui_mainwindow.py después de cerrar NCFConfigDialog con Accepted.
+        
+        Logs: [ITAB-NCF-PREVIEW] y [ITAB-DUE]
+        """
+        print("[ITAB-NCF-PREVIEW] Refrescando NCF y vencimiento tras configuración...")
+        self._update_ncf_sequence()
+        self.refresh_company_due_date()
 
     # -------------------------
     # Direcciones / vencimiento fijo
