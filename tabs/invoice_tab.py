@@ -944,13 +944,6 @@ class InvoiceTab(QWidget):
             logger.exception("Error al cargar factura: %s", e)
             QMessageBox.critical(self, "Error", f"No se pudo cargar la factura:\n{str(e)}")
 
-    def on_company_change(self):
-        try: self.suggestion_combo.hide()
-        except Exception: pass
-        self._clear_invoice_form()
-        self._apply_default_due_date()
-        self._update_ncf_sequence()
-
     # -------------------------
     # Direcciones / vencimiento fijo
     # -------------------------
@@ -1016,3 +1009,56 @@ class InvoiceTab(QWidget):
                 except Exception: pass
                 break
             p = p.parent(); safety += 1
+
+    def refresh_company_due_date(self):
+        """Lee el vencimiento fijo desde backend y lo aplica al widget con logs."""
+        try:
+            company = self.get_current_company()
+            if not company:
+                return
+            cid = int(company.get('id'))
+            due = ""
+            # Preferir métodos dedicados si existen: LogicController ya delega al backend
+            if hasattr(self.logic, "get_company_due_date"):
+                due = self.logic.get_company_due_date(cid) or ""
+            elif hasattr(self.logic, "get_company_invoice_due_date"):
+                due = self.logic.get_company_invoice_due_date(cid) or ""
+            # Aplica al widget
+            if due:
+                self._set_invoice_due_date_widget(due)
+            else:
+                # Si está vacío, deja la fecha según la política actual
+                # o limpia explícitamente si prefieres
+                # self.invoice_due_date.setDate(QDate.currentDate())
+                pass
+            print(f"[ITAB-DUE] Refresh from backend for company_id={cid} -> {due or '(empty)'}")
+        except Exception as e:
+            print(f"[ITAB-DUE] Error refreshing due date: {e}")
+
+    def refresh_after_ncf_config(self):
+        """
+        Refresca datos sensibles tras cerrar/guardar NCFConfigDialog:
+        - NCF preview para la empresa seleccionada
+        - Vencimiento fijo (invoice_due_date) leído desde backend
+        """
+        try:
+            self._update_ncf_sequence()
+        except Exception as e:
+            print(f"[ITAB] Error refreshing NCF after config: {e}")
+        try:
+            self.refresh_company_due_date()
+        except Exception as e:
+            print(f"[ITAB] Error refreshing due date after config: {e}")
+
+    def on_company_change(self):
+        try: self.suggestion_combo.hide()
+        except Exception: pass
+        self._clear_invoice_form()
+        self._apply_default_due_date()
+        # Primero trae vencimiento fijo desde backend y lo aplica
+        try:
+            self.refresh_company_due_date()
+        except Exception:
+            pass
+        # Luego actualiza secuencia NCF
+        self._update_ncf_sequence()
