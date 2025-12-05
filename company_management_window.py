@@ -7,60 +7,40 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QLabel,
     QLineEdit, QPushButton, QFileDialog, QMessageBox, QWidget, QHeaderView, QDateEdit
 )
-from PyQt6.QtCore import QDate
+from PyQt6.QtCore import QDate, Qt
 
-# Manejo de rutas de logo relativas a assets_root
+# Asegúrate de que este import funcione en tu estructura de carpetas
 from utils.asset_paths import copy_logo_to_assets, relativize_if_under_assets
-
 
 class CompanyManagementWindow(QDialog):
     """
-    Ventana única para gestionar empresas en forma consistente con InvoiceTab y las plantillas.
-
-    Requisitos de la capa lógica (logic):
-      LECTURA:
-        - get_all_companies() -> List[dict] con al menos: id, name, rnc (o rnc_number)
-          (Si no incluye phone/email, los rellenamos con get_company_details fila a fila)
-        - get_company_details(company_id:int) -> dict con:
-            id, name, rnc/rnc_number, address_line1|address, address_line2, phone|telefono,
-            email|correo, signature_name, logo_path (RELATIVO), invoice_template_path, invoice_output_base_path,
-            invoice_due_date (YYYY-MM-DD)   <-- NUEVO
-      ESCRITURA:
-        - update_company(company_id, name, rnc, address, template_path, output_path)  [BÁSICOS]
-        - (cualquiera de los siguientes para “extras”)
-            update_company_fields(company_id, payload: dict)
-            update_company_dict(company_id, payload: dict)
-            set_company_field(company_id, key, value)
-        - (opcional) delete_company(company_id)
-        - (opcional) add_company(name, rnc, address)
-        - (opcional) commit()  -> para confirmar transacciones si aplica
+    Ventana para gestionar empresas.
+    Conectada directamente a FirebaseDataAccess via 'logic_controller'.
     """
+
+    SMALL_LINEHEIGHT = 24  # altura compacta para inputs
 
     def __init__(self, parent, logic_controller):
         super().__init__(parent)
         self.setWindowTitle("Gestionar Empresas")
         self.resize(980, 560)
+
+        # Este es tu FirebaseDataAccess
         self.logic = logic_controller
+
         self.selected_company_id: Optional[int] = None
         self._pending_logo_source_abs: Optional[str] = None
         self._companies_cache: List[Dict[str, Any]] = []
+
         self._build_ui()
         self._load_companies()
 
     # -------------------------
-    # Normalización
+    # Normalización (Adaptado a tu JSON de Firebase)
     # -------------------------
     @staticmethod
-    def _norm_min(row: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "id": row.get("id"),
-            "name": row.get("name", ""),
-            "rnc": row.get("rnc") or row.get("rnc_number", "") or "",
-        }
-
-    # Asegúrate de que _norm_full incluya invoice_due_date
-    @staticmethod
     def _norm_full(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Asegura que el diccionario tenga todos los campos que la UI espera."""
         return {
             "id": row.get("id"),
             "name": row.get("name", ""),
@@ -68,25 +48,25 @@ class CompanyManagementWindow(QDialog):
             "address_line1": row.get("address_line1") or row.get("address", "") or "",
             "address_line2": row.get("address_line2", "") or "",
             "phone": row.get("phone") or row.get("telefono", "") or "",
-            "email": row.get("email") or row.get("correo", "") or "",
+            "email": row.get("email") or row.get("correo") or "",
             "signature_name": row.get("signature_name", "") or "",
             "logo_path": row.get("logo_path", "") or "",
-            "invoice_template_path": row.get("invoice_template_path", "") or "",
-            "invoice_output_base_path": row.get("invoice_output_base_path", "") or "",
-            "invoice_due_date": row.get("invoice_due_date", "") or "",   # <---- NUEVO/CRÍTICO
-            # compat con firmas antiguas
-            "address": row.get("address_line1") or row.get("address", "") or "",
+            "invoice_due_date": row.get("invoice_due_date", "") or "",
         }
 
     # -------------------------
-    # UI
+    # UI Construction
     # -------------------------
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
-        # Tabla de empresas
+        # --- Tabla de empresas ---
         table_frame = QWidget()
         table_layout = QVBoxLayout(table_frame)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+
         self.company_table = QTableWidget(0, 4)
         self.company_table.setHorizontalHeaderLabels(["Nombre de la Empresa", "RNC", "Teléfono", "Email"])
         header = self.company_table.horizontalHeader()
@@ -98,178 +78,284 @@ class CompanyManagementWindow(QDialog):
         self.company_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.company_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.company_table.cellClicked.connect(self._on_select)
+        self.company_table.setStyleSheet("QTableWidget::item { padding: 4px 6px; }")
         table_layout.addWidget(self.company_table)
-        main_layout.addWidget(table_frame)
+        main_layout.addWidget(table_frame, stretch=2)
 
-        # Formulario
+        # --- Formulario ---
         form_frame = QWidget()
         form_layout = QVBoxLayout(form_frame)
+        form_layout.setSpacing(6)
+        form_layout.setContentsMargins(4, 4, 4, 4)
 
+        def compact_lineedit(placeholder: str = "") -> QLineEdit:
+            le = QLineEdit()
+            if placeholder:
+                le.setPlaceholderText(placeholder)
+            le.setMinimumHeight(self.SMALL_LINEHEIGHT)
+            le.setMaximumHeight(self.SMALL_LINEHEIGHT + 2)
+            return le
+
+        # Row 1: Nombre / RNC
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Nombre:"))
-        self.name_edit = QLineEdit(); row1.addWidget(self.name_edit)
+        self.name_edit = compact_lineedit()
+        row1.addWidget(self.name_edit, stretch=3)
         row1.addWidget(QLabel("RNC:"))
-        self.rnc_edit = QLineEdit(); row1.addWidget(self.rnc_edit)
+        self.rnc_edit = compact_lineedit()
+        row1.addWidget(self.rnc_edit, stretch=1)
         form_layout.addLayout(row1)
 
+        # Row 2: Dirección 1 / Dirección 2
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Dirección 1:"))
-        self.address1_edit = QLineEdit(); row2.addWidget(self.address1_edit)
+        self.address1_edit = compact_lineedit()
+        row2.addWidget(self.address1_edit, stretch=3)
         row2.addWidget(QLabel("Dirección 2:"))
-        self.address2_edit = QLineEdit(); row2.addWidget(self.address2_edit)
+        self.address2_edit = compact_lineedit()
+        row2.addWidget(self.address2_edit, stretch=2)
         form_layout.addLayout(row2)
 
+        # Row 3: Teléfono / Email
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Teléfono:"))
-        self.phone_edit = QLineEdit(); row3.addWidget(self.phone_edit)
+        self.phone_edit = compact_lineedit()
+        row3.addWidget(self.phone_edit, stretch=1)
         row3.addWidget(QLabel("Email:"))
-        self.email_edit = QLineEdit(); row3.addWidget(self.email_edit)
+        self.email_edit = compact_lineedit()
+        row3.addWidget(self.email_edit, stretch=2)
         form_layout.addLayout(row3)
 
+        # Row 4: Firma autorizada
         row4 = QHBoxLayout()
         row4.addWidget(QLabel("Firma autorizada (nombre):"))
-        self.signature_edit = QLineEdit(); row4.addWidget(self.signature_edit)
+        self.signature_edit = compact_lineedit()
+        row4.addWidget(self.signature_edit, stretch=3)
         form_layout.addLayout(row4)
 
+        # Row 5: Logo
         row5 = QHBoxLayout()
-        row5.addWidget(QLabel("Logo (ruta relativa a assets_root):"))
-        self.logo_path_edit = QLineEdit(); row5.addWidget(self.logo_path_edit)
-        btn_logo = QPushButton("Elegir logo…"); btn_logo.clicked.connect(self._browse_logo)
+        row5.addWidget(QLabel("Logo (ruta relativa):"))
+        self.logo_path_edit = compact_lineedit()
+        row5.addWidget(self.logo_path_edit, stretch=3)
+        btn_logo = QPushButton("Elegir logo…")
+        btn_logo.setMinimumHeight(self.SMALL_LINEHEIGHT + 4)
+        btn_logo.clicked.connect(self._browse_logo)
         row5.addWidget(btn_logo)
         form_layout.addLayout(row5)
 
-        # NUEVO: Vencimiento fijo para facturas (por empresa)
-        row5b = QHBoxLayout()
-        row5b.addWidget(QLabel("Vencimiento fijo facturas:"))
+        # Row 6: Vencimiento fijo
+        row6 = QHBoxLayout()
+        row6.addWidget(QLabel("Vencimiento fijo facturas:"))
         self.invoice_due_date_edit = QDateEdit()
         self.invoice_due_date_edit.setCalendarPopup(True)
         self.invoice_due_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.invoice_due_date_edit.setMinimumHeight(self.SMALL_LINEHEIGHT + 2)
         self.invoice_due_date_edit.setDate(QDate.currentDate())
-        row5b.addWidget(self.invoice_due_date_edit)
+        row6.addWidget(self.invoice_due_date_edit, stretch=1)
         btn_clear_due = QPushButton("Limpiar")
-        btn_clear_due.setToolTip("Deja el vencimiento vacío (N/A) para esta empresa")
+        btn_clear_due.setMinimumHeight(self.SMALL_LINEHEIGHT + 4)
+        btn_clear_due.setToolTip("Deja el vencimiento vacío (N/A)")
         btn_clear_due.clicked.connect(lambda: self.invoice_due_date_edit.setDate(QDate.currentDate()))
-        row5b.addWidget(btn_clear_due)
-        form_layout.addLayout(row5b)
-
-        row6 = QHBoxLayout()
-        row6.addWidget(QLabel("Ruta de Plantilla (Factura):"))
-        self.template_path_edit = QLineEdit(); row6.addWidget(self.template_path_edit)
-        btn_tpl = QPushButton("Examinar…"); btn_tpl.clicked.connect(lambda: self._browse_path(self.template_path_edit, True))
-        row6.addWidget(btn_tpl)
+        row6.addWidget(btn_clear_due)
         form_layout.addLayout(row6)
 
-        row7 = QHBoxLayout()
-        row7.addWidget(QLabel("Carpeta Base de Salida (Facturas):"))
-        self.output_base_edit = QLineEdit(); row7.addWidget(self.output_base_edit)
-        btn_out = QPushButton("Examinar…"); btn_out.clicked.connect(lambda: self._browse_path(self.output_base_edit, False))
-        row7.addWidget(btn_out)
-        form_layout.addLayout(row7)
+        main_layout.addWidget(form_frame, stretch=1)
 
-        main_layout.addWidget(form_frame)
-
-        # Botones
+        # --- Botones inferiores ---
         btns = QHBoxLayout()
-        btn_new = QPushButton("Nuevo"); btn_new.clicked.connect(self._clear_fields); btns.addWidget(btn_new)
-        btn_save = QPushButton("Guardar Cambios"); btn_save.clicked.connect(self._save_company); btns.addWidget(btn_save)
-        btn_del = QPushButton("Eliminar Empresa"); btn_del.clicked.connect(self._delete_company); btns.addWidget(btn_del)
+        btn_new = QPushButton("Nuevo")
+        btn_new.setMinimumHeight(self.SMALL_LINEHEIGHT + 6)
+        btn_new.clicked.connect(self._clear_fields)
+        btns.addWidget(btn_new)
+
+        btn_save = QPushButton("Guardar Cambios")
+        btn_save.setMinimumHeight(self.SMALL_LINEHEIGHT + 6)
+        btn_save.clicked.connect(self._save_company)
+        btns.addWidget(btn_save)
+
+        btn_del = QPushButton("Eliminar Empresa")
+        btn_del.setMinimumHeight(self.SMALL_LINEHEIGHT + 6)
+        btn_del.clicked.connect(self._delete_company)
+        btns.addWidget(btn_del)
+
         main_layout.addLayout(btns)
 
     # -------------------------
-    # Carga/Selección
+    # Carga de Datos
     # -------------------------
     def _load_companies(self):
         self.company_table.setRowCount(0)
 
         if not hasattr(self.logic, "get_all_companies"):
-            QMessageBox.critical(self, "Empresas", "logic.get_all_companies() no está implementado.")
+            QMessageBox.critical(self, "Error", "El backend no tiene el método get_all_companies")
             return
 
-        raw = self.logic.get_all_companies() or []
-        self._companies_cache = raw[:]  # mantener referencia
+        # Llamada directa al backend
+        try:
+            raw = self.logic.get_all_companies() or []
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al cargar empresas de Firebase:\n{e}")
+            raw = []
 
-        # Para que Teléfono y Email se vean aunque get_all_companies no los traiga:
-        enriched_rows: List[Dict[str, Any]] = []
-        for c in raw:
-            m = self._norm_min(c)
-            phone = c.get("phone") or c.get("telefono") or ""
-            email = c.get("email") or c.get("correo") or ""
-            if (not phone or not email) and hasattr(self.logic, "get_company_details"):
-                try:
-                    det = self.logic.get_company_details(c.get("id")) or {}
-                    phone = phone or det.get("phone") or det.get("telefono") or ""
-                    email = email or det.get("email") or det.get("correo") or ""
-                except Exception:
-                    pass
-            m["phone"] = phone
-            m["email"] = email
-            enriched_rows.append(m)
+        self._companies_cache = raw[:]
 
-        for row, company in enumerate(enriched_rows):
+        # Llenar la tabla
+        for row, c in enumerate(self._companies_cache):
+            name = c.get("name", "")
+            rnc = c.get("rnc") or c.get("rnc_number", "")
+            phone = c.get("phone") or c.get("telefono", "")
+            email = c.get("email") or c.get("correo", "")
             self.company_table.insertRow(row)
-            self.company_table.setItem(row, 0, QTableWidgetItem(company["name"]))
-            self.company_table.setItem(row, 1, QTableWidgetItem(company["rnc"]))
-            self.company_table.setItem(row, 2, QTableWidgetItem(company["phone"]))
-            self.company_table.setItem(row, 3, QTableWidgetItem(company["email"]))
+            self.company_table.setItem(row, 0, QTableWidgetItem(str(name)))
+            self.company_table.setItem(row, 1, QTableWidgetItem(str(rnc)))
+            self.company_table.setItem(row, 2, QTableWidgetItem(str(phone)))
+            self.company_table.setItem(row, 3, QTableWidgetItem(str(email)))
             self.company_table.setRowHeight(row, 22)
 
     def _on_select(self, row, _column):
         if row < 0 or row >= len(self._companies_cache):
             return
+
         cid = self._companies_cache[row].get("id")
         if not cid:
             return
+
         self.selected_company_id = cid
 
-        if not hasattr(self.logic, "get_company_details"):
-            QMessageBox.critical(self, "Empresas", "logic.get_company_details(company_id) no está implementado.")
-            return
-
+        # Cargar detalles completos
         try:
-            det_raw = self.logic.get_company_details(cid) or {}
-        except Exception as e:
-            QMessageBox.critical(self, "Empresas", f"No se pudo obtener detalles de la empresa:\n{e}")
-            return
+            det_raw = self.logic.get_company_details(int(cid)) or {}
+        except Exception:
+            det_raw = self._companies_cache[row]  # Fallback
 
         det = self._norm_full(det_raw)
 
-        self.name_edit.setText(det["name"])
-        self.rnc_edit.setText(det["rnc"])
-        self.address1_edit.setText(det["address_line1"])
-        self.address2_edit.setText(det["address_line2"])
-        self.phone_edit.setText(det["phone"])
-        self.email_edit.setText(det["email"])
-        self.signature_edit.setText(det["signature_name"])
-        self.logo_path_edit.setText(det["logo_path"])
-        self.template_path_edit.setText(det["invoice_template_path"])
-        self.output_base_edit.setText(det["invoice_output_base_path"])
-
-        # NUEVO: setear fecha fija de vencimiento si existe
+        # Rellenar formulario
+        self.name_edit.setText(str(det["name"]))
+        self.rnc_edit.setText(str(det["rnc"]))
+        self.address1_edit.setText(str(det["address_line1"]))
+        self.address2_edit.setText(str(det["address_line2"]))
+        self.phone_edit.setText(str(det["phone"]))
+        self.email_edit.setText(str(det["email"]))
+        self.signature_edit.setText(str(det["signature_name"]))
+        self.logo_path_edit.setText(str(det["logo_path"]))
         self._set_due_date_from_str(det.get("invoice_due_date") or "")
 
     def _clear_fields(self):
         self.selected_company_id = None
         self._pending_logo_source_abs = None
-        self.name_edit.clear(); self.rnc_edit.clear()
-        self.address1_edit.clear(); self.address2_edit.clear()
-        self.phone_edit.clear(); self.email_edit.clear()
-        self.signature_edit.clear(); self.logo_path_edit.clear()
-        self.template_path_edit.clear(); self.output_base_edit.clear()
-        self.invoice_due_date_edit.setDate(QDate.currentDate())  # NUEVO
+        self.name_edit.clear()
+        self.rnc_edit.clear()
+        self.address1_edit.clear()
+        self.address2_edit.clear()
+        self.phone_edit.clear()
+        self.email_edit.clear()
+        self.signature_edit.clear()
+        self.logo_path_edit.clear()
+        self.invoice_due_date_edit.setDate(QDate.currentDate())
         self.company_table.clearSelection()
         self.name_edit.setFocus()
 
     # -------------------------
-    # Helpers
+    # Guardado
     # -------------------------
-    def _browse_path(self, target_edit: QLineEdit, is_file: bool):
-        if is_file:
-            path, _ = QFileDialog.getOpenFileName(self, "Seleccionar Plantilla de Factura", "", "Archivos de Excel (*.xlsx);;Todos los archivos (*)")
-        else:
-            path = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta Base para Guardar Facturas")
-        if path:
-            target_edit.setText(path)
+    def _save_company(self):
+        # 1. Recolectar datos del form
+        name = self.name_edit.text().strip()
+        rnc = self.rnc_edit.text().strip()
 
+        if not name or not rnc:
+            QMessageBox.critical(self, "Error", "El Nombre y el RNC son obligatorios.")
+            return
+
+        address1 = self.address1_edit.text().strip()
+        address2 = self.address2_edit.text().strip()
+        phone = self.phone_edit.text().strip()
+        email = self.email_edit.text().strip()
+        signature_name = self.signature_edit.text().strip()
+        fixed_due_date = self._dateedit_to_str(self.invoice_due_date_edit)
+
+        logo_val = self.logo_path_edit.text().strip()
+
+        # 2. Definir ID (existente o nuevo)
+        is_new = self.selected_company_id is None
+
+        try:
+            if is_new:
+                new_id = self.logic.add_company(name, rnc, address1)
+                self.selected_company_id = new_id
+                cid = new_id
+            else:
+                cid = int(self.selected_company_id)
+
+            # 3. Procesar logo (requiere el ID para la ruta)
+            logo_rel = self._prepare_logo_to_save(logo_val, cid)
+
+            # 4. Preparar diccionario completo de actualización
+            payload = {
+                "name": name,
+                "rnc": rnc,
+                "address_line1": address1,
+                "address": address1,  # compat
+                "address_line2": address2,
+                "phone": phone,
+                "email": email,
+                "signature_name": signature_name,
+                "logo_path": logo_rel,
+                "invoice_due_date": fixed_due_date,  # será guardado también en sequences/<id>_meta
+            }
+
+            # 5. Guardar campos extra
+            self.logic.update_company_fields(cid, payload)
+
+            QMessageBox.information(self, "Éxito", "Empresa guardada correctamente.")
+
+            # Recargar tabla y re-seleccionar
+            self._load_companies()
+            self._reselect_by_id(cid)
+
+            # Notificar al padre si tiene método de actualización
+            if hasattr(self.parent(), "_populate_companies"):
+                try:
+                    self.parent()._populate_companies()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error al guardar", f"Ocurrió un error:\n{e}")
+
+    def _delete_company(self):
+        if not self.selected_company_id:
+            QMessageBox.warning(self, "Sin Selección", "Selecciona una empresa para eliminar.")
+            return
+
+        confirm = QMessageBox.question(
+            self, "Confirmar",
+            "¿Seguro que deseas eliminar esta empresa?\nEsta acción no se puede deshacer.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            if hasattr(self.logic, "delete_company"):
+                success, msg = self.logic.delete_company(self.selected_company_id)
+                if success:
+                    QMessageBox.information(self, "Eliminado", "Empresa eliminada.")
+                    self._clear_fields()
+                    self._load_companies()
+                else:
+                    QMessageBox.warning(self, "Error", f"No se pudo eliminar: {msg}")
+            else:
+                QMessageBox.critical(self, "Error", "El backend no soporta eliminación de empresas.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error técnico al eliminar:\n{e}")
+
+    # -------------------------
+    # Helpers y Utilidades
+    # -------------------------
     def _browse_logo(self):
         fn, _ = QFileDialog.getOpenFileName(self, "Seleccionar Logo", "", "Imágenes (*.png *.jpg *.jpeg *.svg);;Todos los archivos (*)")
         if not fn:
@@ -284,147 +370,8 @@ class CompanyManagementWindow(QDialog):
             self._pending_logo_source_abs = fn
             self.logo_path_edit.setText(os.path.basename(fn))
 
-    def _dateedit_to_str(self, de: QDateEdit) -> str:
-        try:
-            qd = de.date()
-            return f"{qd.year():04d}-{qd.month():02d}-{qd.day():02d}"
-        except Exception:
-            return ""
-
-    def _set_due_date_from_str(self, s: str):
-        if not s:
-            self.invoice_due_date_edit.setDate(QDate.currentDate())
-            return
-        try:
-            parts = s[:10].split("-")
-            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-            self.invoice_due_date_edit.setDate(QDate(y, m, d))
-        except Exception:
-            self.invoice_due_date_edit.setDate(QDate.currentDate())
-
-    # -------------------------
-    # Guardado
-    # -------------------------
-    def _save_company(self):
-        name = self.name_edit.text().strip()
-        rnc = self.rnc_edit.text().strip()
-        address1 = self.address1_edit.text().strip()
-        address2 = self.address2_edit.text().strip()
-        phone = self.phone_edit.text().strip()
-        email = self.email_edit.text().strip()
-        signature_name = self.signature_edit.text().strip()
-        logo_val = self.logo_path_edit.text().strip()
-        template_path = self.template_path_edit.text().strip()
-        output_path = self.output_base_edit.text().strip()
-        fixed_due_date = self._dateedit_to_str(self.invoice_due_date_edit)  # NUEVO
-
-        if not name or not rnc:
-            QMessageBox.critical(self, "Error", "El Nombre y el RNC son obligatorios.")
-            return
-
-        if self.selected_company_id:
-            cid = int(self.selected_company_id)
-            # 1) Básicos
-            try:
-                if hasattr(self.logic, "update_company"):
-                    self.logic.update_company(cid, name, rnc, (address1 or ""), template_path, output_path)
-                else:
-                    QMessageBox.warning(self, "Aviso", "logic.update_company(...) no existe. Se omiten campos básicos.")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo actualizar la empresa (básicos):\n{e}")
-                return
-
-            # 2) Logo relativo
-            logo_rel = self._prepare_logo_to_save(logo_val, cid)
-
-            # 3) Extras (incluye vencimiento fijo)
-            extras = {
-                "address_line1": address1,
-                "address_line2": address2,
-                "phone": phone,
-                "email": email,
-                "signature_name": signature_name,
-                "logo_path": logo_rel,
-                "address": address1,
-                "invoice_template_path": template_path,
-                "invoice_output_base_path": output_path,
-                "invoice_due_date": fixed_due_date,   # NUEVO
-            }
-            ok_extras, msg_extras = self._persist_extra_fields(cid, extras)
-
-            # 4) Commit si existe
-            self._maybe_commit()
-
-            # 5) Verificar persistencia real (releer y comparar)
-            missing = self._verify_persisted(cid, extras)
-
-            if missing:
-                QMessageBox.warning(
-                    self, "Guardado parcial",
-                    "Se guardaron cambios, pero algunos campos no persistieron:\n- " + "\n- ".join(missing) +
-                    ("\n\nDetalle: " + msg_extras if msg_extras else "")
-                )
-            else:
-                QMessageBox.information(self, "Éxito", "Empresa actualizada correctamente.")
-        else:
-            # Nueva empresa
-            if not hasattr(self.logic, "add_company"):
-                QMessageBox.critical(self, "Error", "logic.add_company(...) no existe; no puedo crear empresas nuevas.")
-                return
-            try:
-                new_id = int(self.logic.add_company(name, rnc, (address1 or "")))
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo crear la empresa:\n{e}")
-                return
-
-            try:
-                if hasattr(self.logic, "update_company"):
-                    self.logic.update_company(new_id, name, rnc, (address1 or ""), template_path, output_path)
-            except Exception as e:
-                QMessageBox.warning(self, "Aviso", f"La empresa se creó, pero no se pudieron guardar rutas básicas:\n{e}")
-
-            logo_rel = self._prepare_logo_to_save(logo_val, new_id)
-
-            extras = {
-                "address_line1": address1,
-                "address_line2": address2,
-                "phone": phone,
-                "email": email,
-                "signature_name": signature_name,
-                "logo_path": logo_rel,
-                "address": address1,
-                "invoice_template_path": template_path,
-                "invoice_output_base_path": output_path,
-                "invoice_due_date": fixed_due_date,   # NUEVO
-            }
-            ok_extras, msg_extras = self._persist_extra_fields(new_id, extras)
-            self._maybe_commit()
-
-            missing = self._verify_persisted(new_id, extras)
-
-            if missing:
-                QMessageBox.warning(
-                    self, "Guardado parcial",
-                    "La empresa se creó, pero algunos campos no persistieron:\n- " + "\n- ".join(missing) +
-                    ("\n\nDetalle: " + msg_extras if msg_extras else "")
-                )
-            else:
-                QMessageBox.information(self, "Éxito", "Empresa creada correctamente.")
-            self.selected_company_id = new_id
-
-        # Refrescar tabla y mantener selección
-        sel = self.selected_company_id
-        self._load_companies()
-        self._reselect_by_id(sel)
-
-        # Avisar al padre para refrescar combos si existe
-        if hasattr(self.parent(), "_populate_companies"):
-            try:
-                self.parent()._populate_companies()
-            except Exception:
-                pass
-
     def _prepare_logo_to_save(self, current_logo_value: str, company_id: int) -> str:
+        # Si había un logo pendiente de copiar (caso nuevo registro)
         if self._pending_logo_source_abs:
             try:
                 rel = copy_logo_to_assets(self._pending_logo_source_abs, int(company_id))
@@ -448,109 +395,24 @@ class CompanyManagementWindow(QDialog):
                 return ""
         return val.replace("\\", "/")
 
-    def _persist_extra_fields(self, company_id: int, payload_ext: Dict[str, Any]) -> Tuple[bool, str]:
-        """
-        Intenta persistir campos extra con varios métodos.
-        Retorna (ok, msg_detalle).
-        """
-        tried = []
-        for method in ("update_company_fields", "update_company_dict"):
-            if hasattr(self.logic, method):
-                try:
-                    getattr(self.logic, method)(company_id, payload_ext)
-                    return True, f"{method} OK"
-                except Exception as e:
-                    tried.append(f"{method}: {e}")
-
-        if hasattr(self.logic, "set_company_field"):
-            any_ok = False
-            errs = []
-            for k, v in payload_ext.items():
-                try:
-                    self.logic.set_company_field(company_id, k, v)
-                    any_ok = True
-                except Exception as e:
-                    errs.append(f"{k}: {e}")
-            if any_ok:
-                return True, "set_company_field parciales OK" + (f" (err: {', '.join(errs)})" if errs else "")
-            tried.append("set_company_field no logró persistir ningún campo")
-
-        # No hay método soportado
-        return False, "No existe método para guardar campos extra (implementa update_company_fields/update_company_dict o set_company_field). Intenté: " + " | ".join(tried)
-
-    def _maybe_commit(self):
-        if hasattr(self.logic, "commit"):
-            try:
-                self.logic.commit()
-            except Exception:
-                pass
-
-    def _verify_persisted(self, company_id: int, expected: Dict[str, Any]) -> List[str]:
-        """
-        Relee la empresa y compara campos clave; devuelve lista de nombres de campos que no persisten.
-        """
-        missing = []
-        if not hasattr(self.logic, "get_company_details"):
-            return list(expected.keys())  # no podemos verificar
+    def _dateedit_to_str(self, de: QDateEdit) -> str:
         try:
-            det_raw = self.logic.get_company_details(company_id) or {}
+            qd = de.date()
+            return f"{qd.year():04d}-{qd.month():02d}-{qd.day():02d}"
         except Exception:
-            # si no se puede leer, marque todo como no verificado
-            return list(expected.keys())
+            return ""
 
-        det = self._norm_full(det_raw)
-        for k, v in expected.items():
-            # Solo verificamos los que mostramos/soportamos
-            if k not in det:
-                missing.append(k)
-                continue
-            dv = det.get(k, "")
-            if str(dv or "").strip() != str(v or "").strip():
-                missing.append(k)
-        return missing
-
-    # -------------------------
-    # Eliminación
-    # -------------------------
-    def _delete_company(self):
-        if not self.selected_company_id:
-            QMessageBox.warning(self, "Sin Selección", "Selecciona una empresa para eliminar.")
+    def _set_due_date_from_str(self, s: str):
+        if not s:
+            self.invoice_due_date_edit.setDate(QDate.currentDate())
             return
-        confirm = QMessageBox.question(
-            self, "Confirmar",
-            "¿Seguro que deseas eliminar esta empresa y TODAS sus facturas?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        success, msg = (False, "No implementado")
         try:
-            if hasattr(self.logic, "delete_company"):
-                result = self.logic.delete_company(self.selected_company_id)
-                if isinstance(result, tuple):
-                    success, msg = result
-                else:
-                    success, msg = bool(result), ""
-            else:
-                msg = "logic.delete_company no existe"
-        except Exception as e:
-            success, msg = False, str(e)
+            parts = s[:10].split("-")
+            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+            self.invoice_due_date_edit.setDate(QDate(y, m, d))
+        except Exception:
+            self.invoice_due_date_edit.setDate(QDate.currentDate())
 
-        if success:
-            QMessageBox.information(self, "Éxito", "Empresa eliminada correctamente.")
-            sel = None
-            self._load_companies()
-            self._reselect_by_id(sel)
-            if hasattr(self.parent(), "_populate_companies"):
-                try: self.parent()._populate_companies()
-                except Exception: pass
-        else:
-            QMessageBox.critical(self, "Error", str(msg))
-
-    # -------------------------
-    # Utilidades UI
-    # -------------------------
     def _reselect_by_id(self, company_id: Optional[int]):
         if not company_id:
             return

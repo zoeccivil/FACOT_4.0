@@ -119,10 +119,20 @@ class HybridLogicWrapper:
         """Retorna conexión SQLite para compatibilidad."""
         return self._logic.conn if hasattr(self._logic, 'conn') else None
 
-
+from logic import LogicController
+import facot_config
 class MainWindow(QMainWindow):
-    def __init__(self):
+    # CAMBIO AQUÍ: Añadir el parámetro logic_controller=None
+    def __init__(self, logic_controller=None):
         super().__init__()
+        
+        # CAMBIO AQUÍ: Usar el controlador inyectado o crear uno legacy si falla
+        if logic_controller:
+            self.logic = logic_controller
+            print("[MainWindow] Usando LogicController inyectado (Firebase/Proxy)")
+        else:
+            self.logic = LogicController(facot_config.get_db_path())
+            print("[MainWindow] Creando LogicController local (Legacy SQLite)")
         self.setWindowTitle("Gestión de Facturas y Cotizaciones")
         self.resize(1100, 790)
         self.data_access = None  # Will hold DataAccess instance

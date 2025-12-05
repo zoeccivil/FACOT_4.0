@@ -17,6 +17,10 @@ except Exception:
 
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
+# IMPORTS DE TU LÓGICA Y DATOS
+from data_access.firebase_data_access import FirebaseDataAccess
+from logic import LogicController
+
 
 def _ensure_facot_config_loaded(app: QApplication) -> None:
     try:
@@ -28,8 +32,8 @@ def _ensure_facot_config_loaded(app: QApplication) -> None:
     QMessageBox.information(
         None,
         "Configuración requerida",
-        "No se encontró 'facot_config'. Selecciona la base de datos SQLite (*.db) que usará la aplicación.\n"
-        "Este ajuste se guardará para la próxima vez."
+        "No se encontró 'facot_config'. Selecciona la base de datos SQLite (*.db).\n"
+        "NOTA: Al usar Firebase, este archivo solo servirá de referencia local."
     )
     fn, _ = QFileDialog.getOpenFileName(
         None,
@@ -38,20 +42,19 @@ def _ensure_facot_config_loaded(app: QApplication) -> None:
         "SQLite (*.db);;Todos (*.*)"
     )
     if not fn:
-        QMessageBox.critical(None, "Configuración", "No se seleccionó una base de datos. La aplicación se cerrará.")
-        sys.exit(1)
+        fn = str(Path(os.getcwd()) / "dummy_fallback.db")
 
     # Módulo dinámico mínimo
     mod = types.ModuleType("facot_config")
     def get_db_path() -> str:
         return fn
-    mod.get_db_path = get_db_path  # type: ignore[attr-defined]
+    mod.get_db_path = get_db_path 
     def get_empresa_activa():
         return None
-    mod.get_empresa_activa = get_empresa_activa  # type: ignore[attr-defined]
+    mod.get_empresa_activa = get_empresa_activa 
     sys.modules["facot_config"] = mod
 
-    # Persistir JSON junto al ejecutable/cwd
+    # Persistir JSON
     try:
         cfg_path = Path(os.getcwd()) / "facot_config.json"
         cfg_path.write_text(json.dumps({"db_path": fn}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -71,54 +74,102 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
 
     _ensure_facot_config_loaded(app)
+    import facot_config
 
     # ---------------------------
-    # Aplicar tema GUARDADO (si hay uno) y asegurar aplicación
+    # Aplicar tema
     # ---------------------------
     try:
         from utils.theme_manager import get_theme_manager
         tm = get_theme_manager()
         tm.set_app(app)
         saved_id = tm.load_saved_theme()
-        theme_to_apply = saved_id or "light"  # default razonable
+        theme_to_apply = saved_id or "light"
         tm.apply_theme(app, theme_to_apply)
         print(f"[THEME] Tema aplicado al inicio: {theme_to_apply}")
     except Exception as e:
         print(f"[THEME] No se pudo aplicar tema al inicio: {e}")
 
-    # Primer inicio: materializa al lado del EXE y valida recursos
+    # Bootstrap recursos
     try:
         from utils.bootstrap import ensure_first_run, ensure_required_resources
         ensure_first_run()
-        # Valida solo los templates que realmente usas
         ensure_required_resources(required_template_names=["invoice_template.html", "quotation_template.html"], parent=None)
     except Exception:
         pass
 
-    # Inicializar Firebase (abre diálogo si faltan credenciales)
+    # ---------------------------
+    # INICIALIZACIÓN FIREBASE Y LOGIC
+    # ---------------------------
+    firebase_ready = False
     try:
         from firebase.firebase_client import ensure_initialized
         firebase_ready = ensure_initialized()
         if firebase_ready:
             print("[MAIN] Firebase inicializado correctamente")
         else:
-            print("[MAIN] Firebase no disponible, usando modo offline")
+            print("[MAIN] Firebase no disponible")
     except Exception as e:
         print(f"[MAIN] Error inicializando Firebase: {e}")
 
-    # Iniciar scheduler de backups (solo si Firebase está disponible)
-    try:
-        from firebase.firebase_client import get_firebase_client
-        client = get_firebase_client()
-        if client.is_available():
+    # 1. Crear DataAccess (Backend)
+    data_access = None
+    if firebase_ready:
+        try:
+            current_user = os.environ.get("USERNAME", "system")
+            data_access = FirebaseDataAccess(user_id=current_user)
+            print(f"[MAIN] DataAccess creado. Usuario: {current_user}")
+        except Exception as e:
+            print(f"[MAIN] Error crítico creando FirebaseDataAccess: {e}")
+
+    # 2. Crear LogicController (Puente)
+    # Si data_access existe, LogicController funcionará en modo Proxy (Firebase Only)
+    db_path = facot_config.get_db_path()
+    logic = LogicController(db_path=db_path, data_access=data_access)
+
+    if data_access:
+        print("[MAIN] >>> MODO FIREBASE ACTIVADO <<<")
+        # Backup scheduler
+        try:
             from utils.backups import start_backup_scheduler
             start_backup_scheduler()
             print("[MAIN] Scheduler de backups iniciado")
-    except Exception as e:
-        print(f"[MAIN] Error iniciando scheduler de backups: {e}")
+        except Exception as e:
+            print(f"[MAIN] Error iniciando scheduler: {e}")
+    else:
+        print("[MAIN] !!! MODO OFFLINE (SQLITE) !!!")
 
+    # ---------------------------
+    # INICIO DE UI (CORRECCIÓN CRÍTICA)
+    # ---------------------------
     from ui_mainwindow import MainWindow
-    w = MainWindow()
+    
+    # 1. Intentar inyectar en el constructor
+    try:
+        w = MainWindow(logic_controller=logic)
+    except TypeError:
+        print("[MAIN] Constructor de MainWindow no acepta argumentos. Iniciando estándar...")
+        w = MainWindow()
+
+    # 2. FORZAR LA INYECCIÓN (Sobrescribe cualquier LogicController "Zombi" creado internamente)
+    print("[MAIN] 🛡️  BLINDAJE: Forzando LogicController correcto en la ventana principal...")
+    w.logic = logic
+    if hasattr(w, 'controller'):
+        w.controller = logic
+    
+    # 3. Propagar a las pestañas hijas (Tablas de Facturas, Cotizaciones, etc.)
+    if hasattr(w, 'invoice_tab'):
+        print("[MAIN] Inyectando lógica en Pestaña Facturas...")
+        if hasattr(w.invoice_tab, 'logic'): w.invoice_tab.logic = logic
+        if hasattr(w.invoice_tab, 'controller'): w.invoice_tab.controller = logic
+        # Recargar datos de la pestaña si es necesario
+        if hasattr(w.invoice_tab, 'load_invoices'): w.invoice_tab.load_invoices()
+
+    if hasattr(w, 'quotation_tab'):
+        print("[MAIN] Inyectando lógica en Pestaña Cotizaciones...")
+        if hasattr(w.quotation_tab, 'logic'): w.quotation_tab.logic = logic
+        if hasattr(w.quotation_tab, 'controller'): w.quotation_tab.controller = logic
+
     w.show()
     sys.exit(app.exec())
 

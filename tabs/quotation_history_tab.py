@@ -6,7 +6,8 @@ from typing import List, Dict, Any, Tuple
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHBoxLayout, QWidget as QWidgetAlias, QFileDialog, QMessageBox, QHeaderView, QSizePolicy
+    QHBoxLayout, QWidget as QWidgetAlias, QFileDialog, QMessageBox, QHeaderView, QSizePolicy,
+    QComboBox, QLineEdit
 )
 from PyQt6.QtCore import QSize, Qt
 
