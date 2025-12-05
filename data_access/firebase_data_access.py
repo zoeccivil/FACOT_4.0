@@ -18,6 +18,9 @@ except ImportError:
 from firebase import get_firebase_client
 from utils.logger import get_audit_logger
 
+# Constantes
+SIGNED_URL_EXPIRY_SECONDS = 365 * 24 * 60 * 60  # 1 año
+
 
 class FirebaseDataAccess(DataAccess):
     """
@@ -605,7 +608,7 @@ class FirebaseDataAccess(DataAccess):
                 blob.make_public()
                 public_url = blob.public_url
             except Exception:
-                public_url = blob.generate_signed_url(version="v4", expiration=3600*24*365, method="GET")
+                public_url = blob.generate_signed_url(version="v4", expiration=SIGNED_URL_EXPIRY_SECONDS, method="GET")
             print(f"[FIREBASE] Logo subido: {storage_path}")
             return public_url
         except Exception as e:
@@ -716,7 +719,7 @@ class FirebaseDataAccess(DataAccess):
                 # Fallback: generar URL firmada (válida por 1 año)
                 print(f"[PDF-UPLOAD] No se pudo hacer público, usando URL firmada: {e}")
                 try:
-                    url = blob.generate_signed_url(version="v4", expiration=3600*24*365, method="GET")
+                    url = blob.generate_signed_url(version="v4", expiration=SIGNED_URL_EXPIRY_SECONDS, method="GET")
                     print(f"[PDF-UPLOAD] storage_path={storage_path}, url={url} (firmada)")
                 except Exception as e2:
                     print(f"[PDF-UPLOAD] ERROR generando URL firmada: {e2}")
