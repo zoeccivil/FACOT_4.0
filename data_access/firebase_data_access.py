@@ -547,43 +547,259 @@ class FirebaseDataAccess(DataAccess):
 
     # ===== NCF / SECUENCIAS =====
 
-    def get_next_ncf(self, company_id: int, ncf_type: str) -> str:
+    def _normalize_ncf_prefix(self, prefix3: str) -> str:
+        """Normaliza el prefijo a formato estándar (B01, E31, etc.)"""
+        p = (prefix3 or "").upper().strip()
+        # Si ya tiene formato completo (B01, E31), devolverlo
+        if len(p) == 3 and (p[0].isalpha() and p[1:].isdigit()):
+            return p
+        # Si es solo dígitos (01, 31), agregar B o E según el caso
+        if p.isdigit():
+            if p == "31":
+                return "E31"
+            return f"B{p}"
+        # Si empieza con letra pero no tiene 3 caracteres, intentar arreglar
+        if p and p[0].isalpha():
+            if len(p) >= 3:
+                return p[:3]
+            # Agregar dígitos faltantes
+            if len(p) == 1:
+                return f"{p}01"
+        return "B01"  # fallback
+
+    def _format_ncf(self, prefix3: str, seq_num: int) -> str:
+        """Formatea NCF según el prefijo."""
+        prefix3 = self._normalize_ncf_prefix(prefix3)
+        # E-CF (E31): E + 2 dígitos tipo + 11 dígitos secuencia = 14 total
+        if prefix3.startswith("E"):
+            tipo = prefix3[1:3]  # ej: "31"
+            return f"E{tipo}{seq_num:011d}"
+        # NCF estándar (Bxx): Prefix (3 chars) + 8 dígitos
+        return f"{prefix3}{seq_num:08d}"
+
+    def get_ncf_last_seq(self, company_id: int, prefix3: str) -> int:
         """
-        Obtiene el siguiente NCF de sequences/{company_id}_ncf_{TYPE} de forma transaccional.
-        Devuelve B01/B14/B15 + 8 dígitos.
+        Obtiene la última secuencia asignada para un prefijo NCF.
+        NO incrementa. Retorna 0 si no existe.
+        """
+        try:
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            doc_path = f"sequences/{company_id}ncf{prefix3}"
+            print(f"[SEQ get_ncf_last_seq] doc_path={doc_path}")
+            
+            doc_ref = self.db.collection('sequences').document(f"{company_id}ncf{prefix3}")
+            doc = doc_ref.get()
+            
+            exists = doc.exists
+            current = int(doc.get('current') or 0) if exists else 0
+            
+            print(f"[SEQ get_ncf_last_seq] exists={exists}, current={current}")
+            return current
+        except Exception as e:
+            print(f"[SEQ get_ncf_last_seq] ERROR: {e}")
+            return 0
+
+    def set_ncf_last_seq(self, company_id: int, prefix3: str, last_seq: int) -> bool:
+        """
+        Establece la última secuencia para un prefijo NCF.
+        Usado para configuración manual.
+        """
+        try:
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            doc_path = f"sequences/{company_id}ncf{prefix3}"
+            print(f"[SEQ set_ncf_last_seq] doc_path={doc_path}")
+            
+            doc_ref = self.db.collection('sequences').document(f"{company_id}ncf{prefix3}")
+            
+            # Leer valor anterior
+            doc = doc_ref.get()
+            before = int(doc.get('current') or 0) if doc.exists else 0
+            print(f"[SEQ set_ncf_last_seq] before={before}")
+            
+            # Guardar nuevo valor
+            data = {
+                'current': int(last_seq),
+                'updated_at': datetime.utcnow().isoformat(),
+                'updated_by': self.user_id
+            }
+            doc_ref.set(data, merge=True)
+            print(f"[SEQ set_ncf_last_seq] after/guardado={last_seq}")
+            
+            return True
+        except Exception as e:
+            print(f"[SEQ set_ncf_last_seq] ERROR: {e}")
+            return False
+
+    def get_ncf_preview(self, company_id: int, prefix3: str) -> str:
+        """
+        Obtiene preview del próximo NCF SIN incrementar la secuencia.
+        """
+        try:
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            doc_ref = self.db.collection('sequences').document(f"{company_id}ncf{prefix3}")
+            doc = doc_ref.get()
+            
+            current = int(doc.get('current') or 0) if doc.exists else 0
+            next_seq = current + 1
+            preview_result = self._format_ncf(prefix3, next_seq)
+            
+            print(f"[SEQ get_ncf_preview] company_id={company_id}, prefix3={prefix3}, current={current}, preview_result={preview_result}")
+            
+            return preview_result
+        except Exception as e:
+            print(f"[SEQ get_ncf_preview] ERROR: {e}")
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            return self._format_ncf(prefix3, 1)
+
+    def allocate_next_ncf(self, company_id: int, prefix3: str) -> str:
+        """
+        Asigna y consume el siguiente NCF de forma transaccional.
+        SÍ incrementa la secuencia.
         """
         try:
             from google.cloud import firestore as gcf
-
-            # normalizar tipo (solo dígitos y mayúsculas)
-            ncf_type = (ncf_type or "").upper().strip()
-            # Aceptar valores como B01/B14/B15 o solo '01', '14', '15'
-            if ncf_type.startswith("B"):
-                prefix = ncf_type
-            else:
-                prefix = f"B{ncf_type}"
-            # llave de documento
-            seq_doc_id = f"{company_id}_ncf_{prefix}"
-            sequence_ref = self.db.collection('sequences').document(seq_doc_id)
-
+            
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            doc_id = f"{company_id}ncf{prefix3}"
+            sequence_ref = self.db.collection('sequences').document(doc_id)
+            
+            print(f"[SEQ allocate_next_ncf] company_id={company_id}, prefix3={prefix3}")
+            
             @gcf.transactional
-            def increment_sequence(transaction):
+            def increment_and_allocate(transaction):
                 snapshot = sequence_ref.get(transaction=transaction)
-                current = int(snapshot.get('current') or 0) if snapshot.exists else 0
-                new_value = current + 1
-                transaction.set(sequence_ref, {'current': new_value, 'updated_at': datetime.utcnow().isoformat(), 'updated_by': self.user_id}, merge=True)
-                return new_value
-
+                before = int(snapshot.get('current') or 0) if snapshot.exists else 0
+                after = before + 1
+                
+                transaction.set(
+                    sequence_ref,
+                    {
+                        'current': after,
+                        'updated_at': datetime.utcnow().isoformat(),
+                        'updated_by': self.user_id
+                    },
+                    merge=True
+                )
+                
+                allocated_ncf = self._format_ncf(prefix3, after)
+                print(f"[SEQ allocate_next_ncf] before={before}, after={after}, allocated_ncf={allocated_ncf}")
+                return allocated_ncf
+            
             transaction = self.db.transaction()
-            seq_num = increment_sequence(transaction)
-            return f"{prefix}{seq_num:08d}"
+            result = increment_and_allocate(transaction)
+            return result
+            
+        except ImportError:
+            # Fallback sin transacciones (NO-TXN)
+            print(f"[SEQ allocate_next_ncf] NO-TXN fallback (transacciones no disponibles)")
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            doc_id = f"{company_id}ncf{prefix3}"
+            doc_ref = self.db.collection('sequences').document(doc_id)
+            
+            doc = doc_ref.get()
+            before = int(doc.get('current') or 0) if doc.exists else 0
+            after = before + 1
+            
+            doc_ref.set(
+                {
+                    'current': after,
+                    'updated_at': datetime.utcnow().isoformat(),
+                    'updated_by': self.user_id
+                },
+                merge=True
+            )
+            
+            allocated_ncf = self._format_ncf(prefix3, after)
+            print(f"[SEQ allocate_next_ncf NO-TXN] before={before}, after={after}, allocated_ncf={allocated_ncf}")
+            return allocated_ncf
+            
         except Exception as e:
-            print(f"[FIREBASE] Error getting next NCF: {e}")
-            # fallback seguro
-            prefix = (ncf_type or "B01").upper().strip()
-            if not prefix.startswith("B"):
-                prefix = f"B{prefix}"
-            return f"{prefix}00000001"
+            print(f"[SEQ allocate_next_ncf] ERROR: {e}")
+            prefix3 = self._normalize_ncf_prefix(prefix3)
+            return self._format_ncf(prefix3, 1)
+
+    def get_company_due_date(self, company_id: int) -> str:
+        """
+        Obtiene la fecha de vencimiento fija de facturas para una empresa.
+        Preferencia: sequences/{id}_meta, luego companies/{id}.
+        """
+        try:
+            # Primero intentar sequences/{id}_meta
+            meta_path = f"sequences/{company_id}_meta"
+            print(f"[DUE get_company_due_date] Consultando {meta_path}")
+            
+            meta_ref = self.db.collection('sequences').document(f"{company_id}_meta")
+            meta_doc = meta_ref.get()
+            
+            if meta_doc.exists:
+                meta = meta_doc.to_dict() or {}
+                inv_due = (meta.get('invoice_due_date') or '').strip()
+                if inv_due:
+                    print(f"[DUE get_company_due_date] Encontrado en {meta_path}: {inv_due}")
+                    return inv_due
+            
+            # Fallback: companies/{id}
+            company_path = f"companies/{company_id}"
+            print(f"[DUE get_company_due_date] Consultando fallback {company_path}")
+            
+            company_ref = self.db.collection('companies').document(str(company_id))
+            company_doc = company_ref.get()
+            
+            if company_doc.exists:
+                company = company_doc.to_dict() or {}
+                inv_due = (company.get('invoice_due_date') or '').strip()
+                print(f"[DUE get_company_due_date] Valor final: {inv_due}")
+                return inv_due
+            
+            print(f"[DUE get_company_due_date] No encontrado, retornando vacío")
+            return ""
+            
+        except Exception as e:
+            print(f"[DUE get_company_due_date] ERROR: {e}")
+            return ""
+
+    def set_company_due_date(self, company_id: int, due: str) -> bool:
+        """
+        Establece la fecha de vencimiento fija para facturas.
+        Guarda en sequences/{id}_meta y opcionalmente en companies/{id}.
+        """
+        try:
+            due = (due or '').strip()
+            
+            # Guardar en sequences/{id}_meta
+            meta_path = f"sequences/{company_id}_meta"
+            print(f"[DUE set_company_due_date] Guardando en {meta_path}: {due}")
+            
+            meta_ref = self.db.collection('sequences').document(f"{company_id}_meta")
+            meta_data = {
+                'invoice_due_date': due,
+                'updated_at': datetime.utcnow().isoformat(),
+                'updated_by': self.user_id
+            }
+            meta_ref.set(meta_data, merge=True)
+            print(f"[DUE set_company_due_date] Guardado en {meta_path}: OK")
+            
+            # Espejo en companies/{id} por compatibilidad
+            company_path = f"companies/{company_id}"
+            print(f"[DUE set_company_due_date] Reflejando en {company_path}: {due}")
+            
+            company_ref = self.db.collection('companies').document(str(company_id))
+            company_ref.set({'invoice_due_date': due}, merge=True)
+            print(f"[DUE set_company_due_date] Reflejado en {company_path}: OK")
+            
+            return True
+            
+        except Exception as e:
+            print(f"[DUE set_company_due_date] ERROR: {e}")
+            return False
+
+    def get_next_ncf(self, company_id: int, ncf_type: str) -> str:
+        """
+        LEGACY: Mantiene compatibilidad con código existente.
+        Delega a allocate_next_ncf.
+        """
+        prefix3 = self._normalize_ncf_prefix(ncf_type)
+        return self.allocate_next_ncf(company_id, prefix3)
 
     # ===== LOGOS EN STORAGE =====
 

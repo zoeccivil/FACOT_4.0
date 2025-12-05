@@ -301,8 +301,10 @@ class InvoiceTab(QWidget):
         try:
             if hasattr(self.logic, "get_ncf_preview"):
                 preview = self.logic.get_ncf_preview(int(company['id']), prefix3)
+                print(f"[ITAB-NCF-PREVIEW] company_id={company['id']}, prefix3={prefix3}, preview={preview}")
             elif hasattr(self.logic, "get_next_ncf"):
                 preview = self.logic.get_next_ncf(int(company['id']), prefix3)
+                print(f"[ITAB-NCF-PREVIEW] company_id={company['id']}, prefix3={prefix3}, preview={preview} (via get_next_ncf)")
         except Exception as e:
             print(f"[NCF] Error preview: {e}")
         preview = self._dedupe_ncf(preview, prefix3)
@@ -313,11 +315,22 @@ class InvoiceTab(QWidget):
         if not comp:
             QMessageBox.warning(self, "NCF", "Seleccione una empresa."); return
         prefix3 = self._category_prefix()
+        
+        # Obtener el valor antes (para logging)
+        before_ncf = ""
+        try:
+            if hasattr(self.logic, "get_ncf_preview"):
+                before_ncf = self.logic.get_ncf_preview(int(comp['id']), prefix3)
+        except Exception:
+            pass
+        
         try:
             if hasattr(self.logic, "allocate_next_ncf"):
                 next_ncf = self.logic.allocate_next_ncf(int(comp['id']), prefix3)
+                print(f"[ITAB-NCF-ALLOC] company_id={comp['id']}, prefix3={prefix3}, before={before_ncf}, after={next_ncf}, assigned={next_ncf}")
             else:
                 next_ncf = self.logic.get_next_ncf(int(comp['id']), prefix3)
+                print(f"[ITAB-NCF-ALLOC] company_id={comp['id']}, prefix3={prefix3}, assigned={next_ncf} (via get_next_ncf)")
             next_ncf = self._dedupe_ncf(next_ncf, prefix3)
             self.ncf_number_edit.setText(next_ncf)
         except Exception as e:
