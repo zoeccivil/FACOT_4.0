@@ -321,8 +321,8 @@ class InvoiceTab(QWidget):
         try:
             if hasattr(self.logic, "get_ncf_preview"):
                 before_ncf = self.logic.get_ncf_preview(int(comp['id']), prefix3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ITAB-NCF-ALLOC] Error obteniendo preview: {e}")
         
         try:
             if hasattr(self.logic, "allocate_next_ncf"):

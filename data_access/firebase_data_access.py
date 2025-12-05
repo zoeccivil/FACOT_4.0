@@ -689,9 +689,10 @@ class FirebaseDataAccess(DataAccess):
             result = increment_and_allocate(transaction)
             return result
             
-        except ImportError:
+        except ImportError as ie:
             # Fallback sin transacciones (NO-TXN)
-            print(f"[SEQ allocate_next_ncf] NO-TXN fallback (transacciones no disponibles)")
+            # Solo si falla la importación de google.cloud.firestore
+            print(f"[SEQ allocate_next_ncf] NO-TXN fallback (google.cloud.firestore no disponible: {ie})")
             prefix3 = self._normalize_ncf_prefix(prefix3)
             doc_id = f"{company_id}ncf{prefix3}"
             doc_ref = self.db.collection('sequences').document(doc_id)
@@ -796,7 +797,15 @@ class FirebaseDataAccess(DataAccess):
     def get_next_ncf(self, company_id: int, ncf_type: str) -> str:
         """
         LEGACY: Mantiene compatibilidad con código existente.
-        Delega a allocate_next_ncf.
+        IMPORTANTE: Este método ahora INCREMENTA la secuencia (delega a allocate_next_ncf).
+        Para preview sin incrementar, usar get_ncf_preview.
+        
+        Args:
+            company_id: ID de la empresa
+            ncf_type: Tipo de NCF (B01, B02, E31, etc.)
+        
+        Returns:
+            NCF formateado y asignado (secuencia incrementada)
         """
         prefix3 = self._normalize_ncf_prefix(ncf_type)
         return self.allocate_next_ncf(company_id, prefix3)
