@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import logging
 from typing import Dict, Any, List, Any as AnyType
 from datetime import datetime as dt
 from PyQt6.QtWidgets import (
@@ -66,6 +67,9 @@ CATEGORY_TO_PREFIX = {
     "FACTURA EXCENTA (REGIMEN ESPECIAL)": "B14",
 }
 DEFAULT_UNIT_FALLBACK = "UND"
+
+# Logger
+logger = logging.getLogger(__name__)
 
 
 class InvoiceTab(QWidget):
@@ -834,6 +838,98 @@ class InvoiceTab(QWidget):
             self.total_label.setText("Total: RD$ 0.00")
         except Exception:
             pass
+    
+    def load_invoice_by_id(self, invoice_id: int):
+        """
+        Load an existing invoice into the form for editing.
+        
+        Args:
+            invoice_id: ID of the invoice to load
+        """
+        try:
+            # Get invoice data
+            invoice = None
+            if hasattr(self.logic, 'get_invoice_by_id'):
+                invoice = self.logic.get_invoice_by_id(invoice_id)
+            else:
+                # Fallback: search in get_facturas
+                company = self.get_current_company()
+                if company and hasattr(self.logic, 'get_facturas'):
+                    facturas = self.logic.get_facturas(company['id'])
+                    for f in facturas:
+                        if f.get('id') == invoice_id or str(f.get('id')) == str(invoice_id):
+                            invoice = f
+                            break
+            
+            if not invoice:
+                QMessageBox.warning(self, "Error", f"No se encontró la factura con ID: {invoice_id}")
+                return
+            
+            # Clear form first
+            self._clear_invoice_form()
+            
+            # Load header data
+            # Date
+            date_str = invoice.get('invoice_date', '')
+            if date_str:
+                try:
+                    from datetime import datetime
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    self.invoice_date.setDate(QDate(date_obj.year, date_obj.month, date_obj.day))
+                except Exception:
+                    pass
+            
+            # NCF
+            ncf = invoice.get('invoice_number', '') or invoice.get('ncf', '')
+            self.ncf_number_edit.setText(ncf)
+            
+            # Category
+            category = invoice.get('invoice_category', '')
+            if category:
+                index = self.invoice_kind_combo.findText(category)
+                if index >= 0:
+                    self.invoice_kind_combo.setCurrentIndex(index)
+            
+            # Client data
+            self.client_name.setText(invoice.get('third_party_name', '') or invoice.get('client_name', ''))
+            self.client_rnc.setText(invoice.get('rnc', '') or invoice.get('client_rnc', ''))
+            
+            # Currency
+            currency = invoice.get('currency', 'RD$')
+            index = self.currency_combo.findText(currency)
+            if index >= 0:
+                self.currency_combo.setCurrentIndex(index)
+            
+            # Exchange rate
+            exchange_rate = invoice.get('exchange_rate', 1.0) or 1.0
+            self.exchange_rate_edit.setText(str(exchange_rate))
+            if currency != 'RD$':
+                self.exchange_rate_edit.setVisible(True)
+            
+            # Load items
+            items = []
+            if hasattr(self.logic, 'get_invoice_items'):
+                items = self.logic.get_invoice_items(invoice_id)
+            
+            # Populate items table
+            self.invoice_items_table.setRowCount(0)
+            for item in items:
+                code = item.get('item_code', item.get('code', ''))
+                name = item.get('description', item.get('name', ''))
+                unit = item.get('unit', 'UND')
+                qty = item.get('quantity', 0.0)
+                price = item.get('unit_price', item.get('price', 0.0))
+                subtotal = qty * price
+                self._append_row(code, name, unit, qty, price, subtotal)
+            
+            # Recalculate totals
+            self._recalculate_invoice_totals()
+            
+            QMessageBox.information(self, "Cargar Factura", f"Factura ID: {invoice_id} cargada para edición")
+            
+        except Exception as e:
+            logger.exception("Error al cargar factura: %s", e)
+            QMessageBox.critical(self, "Error", f"No se pudo cargar la factura:\n{str(e)}")
 
     def on_company_change(self):
         try: self.suggestion_combo.hide()
