@@ -857,6 +857,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Plantilla", "Plantilla guardada correctamente.")
         except Exception as e:
             QMessageBox.critical(self, "Plantilla", f"No se pudo abrir el editor de plantillas:\n{e}")
+            
     def _setup_connection_status(self):
         """Configura la barra de estado de conexión."""
         # Crear barra de estado
