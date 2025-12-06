@@ -122,6 +122,7 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
 def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_db: Optional[Dict[str, Any]] = None, logic_controller=None) -> Dict[str, Any]:
     company = dict(company_record or {})
 
+    # Debug inputs
     print("\n[QT-LOGO] _prepare_company_data_for_preview() - INPUTS")
     try:
         print(f"  INPUT company: id={company.get('id')} name='{company.get('name')}' logo_path='{company.get('logo_path')}'")
@@ -129,24 +130,28 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
     except Exception:
         pass
 
+    # Refrescar desde backend (incluye firma, due_date y branding en companies/<id>)
     try:
-        if logic_controller and (not company.get("address_line1") or not company.get("signature_name")):
-            cid = company.get("id")
-            if cid:
-                try:
-                    details = logic_controller.get_company_details(cid) or {}
-                    print(f"  [FALLBACK] get_company_details({cid}) -> {details}")
-                    for key in ["address_line1", "address_line2", "address", "signature_name", "authorized_name", "logo_path", "phone", "email", "rnc", "invoice_due_date"]:
-                        if not company.get(key) and details.get(key):
-                            company[key] = details.get(key)
-                except Exception as e:
-                    print(f"  [FALLBACK ERROR] get_company_details failed: {e}")
-    except Exception:
-        pass
+        cid = company.get("id")
+        if logic_controller and cid:
+            details = logic_controller.get_company_details(cid) or {}
+            print(f"  [FALLBACK] get_company_details({cid}) -> {details}")
+            for key in [
+                "address_line1","address_line2","address","signature_name","authorized_name","logo_path",
+                "phone","email","rnc","invoice_due_date",
+                # Branding Opción A:
+                "primary_color","secondary_color","font_name","font_size","layout","header_lines","footer_lines","show_logo"
+            ]:
+                # Si ya hay valor en company, respétalo; si no, toma el remoto
+                if company.get(key) in (None, "", []) and details.get(key) is not None:
+                    company[key] = details.get(key)
+    except Exception as e:
+        print(f"  [FALLBACK ERROR] get_company_details failed: {e}")
 
+    # Normalizar fecha de vencimiento si falta: buscar helpers y sequences/<id>_meta
+    from datetime import datetime
     def _normalize_date_str(s: Optional[str]) -> str:
-        if not s:
-            return ""
+        if not s: return ""
         try:
             s2 = str(s).strip()
             if len(s2) >= 10 and s2[4] == '-' and s2[7] == '-':
@@ -167,40 +172,37 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
         except Exception:
             return ""
 
-    if not (company.get("invoice_due_date") or "").strip():
-        try:
-            if logic_controller:
-                for fn in ("get_company_due_date", "get_company_invoice_due_date", "get_company_due", "get_invoice_due_date"):
-                    try:
-                        if hasattr(logic_controller, fn):
-                            v = getattr(logic_controller, fn)(company.get("id"))
-                            v_norm = _normalize_date_str(v)
-                            if v_norm:
-                                company["invoice_due_date"] = v_norm
-                                print(f"  [FALLBACK-DUE] obtained due_date via {fn}: {v_norm}")
-                                break
-                    except Exception as e_fn:
-                        print(f"  [FALLBACK-DUE] {fn} raised: {e_fn}")
+    try:
+        if not (company.get("invoice_due_date") or "").strip() and logic_controller:
+            for fn in ("get_company_due_date", "get_company_invoice_due_date", "get_company_due", "get_invoice_due_date"):
                 try:
-                    da = getattr(logic_controller, "data_access", None) or getattr(logic_controller, "dataAccess", None)
-                    if da and hasattr(da, "db"):
-                        mid = f"{company.get('id')}_meta"
-                        try:
-                            doc = da.db.collection("sequences").document(mid).get()
-                            if doc and getattr(doc, "exists", False):
-                                dd = doc.to_dict() or {}
-                                v2 = dd.get("invoice_due_date") or dd.get("due_date") or ""
-                                v2n = _normalize_date_str(v2)
-                                if v2n and not company.get("invoice_due_date"):
-                                    company["invoice_due_date"] = v2n
-                                    print(f"  [FALLBACK-DUE] obtained due_date from sequences/{mid}: {v2n}")
-                        except Exception as e_da:
-                            print(f"  [FALLBACK-DUE] data_access check error: {e_da}")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    if hasattr(logic_controller, fn):
+                        v = getattr(logic_controller, fn)(company.get("id"))
+                        v_norm = _normalize_date_str(v)
+                        if v_norm:
+                            company["invoice_due_date"] = v_norm
+                            print(f"  [FALLBACK-DUE] obtained due_date via {fn}: {v_norm}")
+                            break
+                except Exception as e_fn:
+                    print(f"  [FALLBACK-DUE] {fn} raised: {e_fn}")
+            try:
+                da = getattr(logic_controller, "data_access", None) or getattr(logic_controller, "dataAccess", None)
+                if da and hasattr(da, "db"):
+                    mid = f"{company.get('id')}_meta"
+                    doc = da.db.collection("sequences").document(mid).get()
+                    if doc and getattr(doc, "exists", False):
+                        dd = doc.to_dict() or {}
+                        v2 = dd.get("invoice_due_date") or dd.get("due_date") or ""
+                        v2n = _normalize_date_str(v2)
+                        if v2n and not company.get("invoice_due_date"):
+                            company["invoice_due_date"] = v2n
+                            print(f"  [FALLBACK-DUE] obtained due_date from sequences/{mid}: {v2n}")
+            except Exception as e_da:
+                print(f"  [FALLBACK-DUE] data_access check error: {e_da}")
+    except Exception:
+        pass
 
+    # Campos básicos
     company["name"] = company.get("name") or company.get("company_name") or ""
     company["rnc"] = company.get("rnc") or company.get("rnc_number") or company.get("rnc_cliente") or ""
     company["phone"] = company.get("phone") or company.get("telefono") or ""
@@ -210,18 +212,16 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
     a2 = (company.get("address_line2") or "").strip()
     company["address_line1"] = a1
     company["address_line2"] = a2
-    address_full = (a1 + (" " + a2 if a2 else "")).strip()
-    if not address_full:
-        address_full = (company.get("address") or "").strip()
+    address_full = (a1 + (" " + a2 if a2 else "")).strip() or (company.get("address") or "").strip()
     company["address"] = address_full or "Dirección no especificada"
 
+    # Firma autorizada
     sig = ""
     for k in ("signature_name", "authorized_name", "firma", "signature", "authorized_signer", "authorized"):
         v = company.get(k)
         if v and isinstance(v, str) and v.strip():
             sig = v.strip()
             break
-
     if not sig and logic_controller and company.get("id"):
         try:
             details2 = logic_controller.get_company_details(company.get("id")) or {}
@@ -234,38 +234,34 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
                 print(f"  [FALLBACK-2] Found signature in remote details: '{sig}'")
         except Exception as e:
             print(f"  [FALLBACK-2 ERROR] fetching company details for signature: {e}")
-
     company["signature_name"] = sig
     company["authorized_name"] = sig
 
-    # Logo resuelto con soporte para storage signed URLs
-    resolved = _resolve_logo_uri(company, tpl_from_db) or company.get("logo_path") or ""
-    
-    # Si resolved no es http/https/file y parece storage-relative, pedir signed URL
-    if resolved and not resolved.startswith(('http://', 'https://', 'file:///')):
-        # Podría ser ruta relativa a storage (ej: "logos/company_123.png")
-        if logic_controller and hasattr(logic_controller, 'generate_signed_url_for_path'):
-            try:
-                print(f"[QT-LOGO] Attempting to generate signed URL for storage path: {resolved}")
-                signed_url = logic_controller.generate_signed_url_for_path(resolved, days=7)
-                if signed_url and signed_url.startswith(('http://', 'https://')):
-                    print(f"[QT-LOGO] Using signed URL: {signed_url}")
-                    resolved = signed_url
-                else:
-                    print(f"[QT-LOGO] No signed URL generated, keeping original: {resolved}")
-            except Exception as e:
-                print(f"[QT-LOGO] Error generating signed URL: {e}")
-    
+    # Logo: Opción A → usar URL pública almacenada en companies.logo_path. No generar signed URL.
+    resolved = company.get("logo_path") or (tpl_from_db or {}).get("logo_path") or ""
     company["logo_path"] = resolved
 
+    # Branding: priorizar companies/<id>
+    company["primary_color"] = company.get("primary_color") or (tpl_from_db or {}).get("primary_color") or "#0087C3"
+    company["secondary_color"] = company.get("secondary_color") or (tpl_from_db or {}).get("secondary_color") or "#F5F5F5"
+    company["header_lines"] = company.get("header_lines") or (tpl_from_db or {}).get("header_lines") or ["", "", ""]
+    company["footer_lines"] = company.get("footer_lines") or (tpl_from_db or {}).get("footer_lines") or []
+    company["font_name"] = company.get("font_name") or (tpl_from_db or {}).get("font_name") or "Inter"
+    company["font_size"] = company.get("font_size") or (tpl_from_db or {}).get("font_size") or 13
+    company["layout"] = company.get("layout") or (tpl_from_db or {}).get("layout") or "default"
+
+    # Normalizar due_date final
     try:
         company["invoice_due_date"] = _normalize_date_str(company.get("invoice_due_date") or "")
     except Exception:
         company["invoice_due_date"] = (company.get("invoice_due_date") or "").strip()
 
+    # Debug outputs
     print("[QT-LOGO] _prepare_company_data_for_preview() - OUTPUTS")
     try:
         print(f"  OUTPUT company.logo_path='{company.get('logo_path')}' (display-ready)")
+        print(f"  OUTPUT company.primary_color='{company.get('primary_color')}', secondary_color='{company.get('secondary_color')}'")
+        print(f"  OUTPUT company.header_lines={company.get('header_lines')}, footer_lines={company.get('footer_lines')}")
         print(f"  OUTPUT company.name='{company.get('name')}', rnc='{company.get('rnc')}'")
         print(f"  OUTPUT company.address='{company.get('address')}'")
         print(f"  OUTPUT company.signature_name='{company.get('signature_name')}' (authorized_name='{company.get('authorized_name')}')")
@@ -276,30 +272,30 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
     return company
 
 
-def _compute_due_date_if_missing(invoice: Dict[str, Any]) -> None:
-    if not isinstance(invoice, dict):
+def _compute_due_date_if_missing(quotation: Dict[str, Any]) -> None:
+    if not isinstance(quotation, dict):
         return
-    if invoice.get("due_date") and invoice.get("due_date") != invoice.get("date"):
+    if quotation.get("due_date") and quotation.get("due_date") != quotation.get("date"):
         return
     fixed = getattr(facot_config, "INVOICE_FIXED_DUE_DATE", "") or ""
     if fixed:
-        invoice["due_date"] = fixed
+        quotation["due_date"] = fixed
         return
     days = int(getattr(facot_config, "INVOICE_DUE_DAYS", 0) or 0)
-    inv_date = (invoice.get("date") or "").strip()
+    inv_date = (quotation.get("date") or "").strip()
     if days > 0 and inv_date:
         try:
             d = datetime.strptime(inv_date, "%Y-%m-%d")
             new_due_date = (d + timedelta(days=days)).strftime("%Y-%m-%d")
             if new_due_date != inv_date:
-                invoice["due_date"] = new_due_date
+                quotation["due_date"] = new_due_date
         except Exception:
             pass
 
 
-def _ensure_units(invoice: Dict[str, Any], logic_controller=None) -> None:
+def _ensure_units(quotation: Dict[str, Any], logic_controller=None) -> None:
     try:
-        items = invoice.get("items") or []
+        items = quotation.get("items") or []
 
         if logic_controller:
             try:

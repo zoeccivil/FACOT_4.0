@@ -1238,31 +1238,28 @@ class InvoiceTab(QWidget):
     # -------------------------
     def _on_edit_template(self):
         """
-        Abre CompanyManagementWindow para editar empresa/plantilla/logo.
-        Deprecado: TemplateEditorDialog (mantener disponible como fallback).
+        Abre CompanyManagementWindow para editar empresa/branding.
+        Se retira TemplateEditorDialog (deprecated).
         """
         company = None
         try: company = self.get_current_company()
         except Exception: pass
         if not company:
-            QMessageBox.warning(self, "Plantilla", "Seleccione primero una empresa válida.")
+            QMessageBox.warning(self, "Branding", "Seleccione primero una empresa válida.")
             return
-        
+
         company_id = (company.get("id") or company.get("company_id") or company.get("pk"))
         if not company_id:
-            QMessageBox.warning(self, "Plantilla", "Empresa sin identificador."); return
-        
-        # Preferir CompanyManagementWindow para edición centralizada
+            QMessageBox.warning(self, "Branding", "Empresa sin identificador."); return
+
         if CompanyManagementWindow:
             try:
                 dlg = CompanyManagementWindow(parent=self, logic_controller=self.logic)
                 # Pre-seleccionar la empresa actual
                 try:
                     dlg.selected_company_id = int(company_id)
-                    # Cargar detalles
                     if hasattr(dlg, '_load_companies'):
                         dlg._load_companies()
-                    # Seleccionar en tabla
                     for row in range(dlg.company_table.rowCount()):
                         if dlg._companies_cache and row < len(dlg._companies_cache):
                             if dlg._companies_cache[row].get('id') == int(company_id):
@@ -1271,7 +1268,7 @@ class InvoiceTab(QWidget):
                                 break
                 except Exception as e:
                     print(f"[ITAB] Error pre-selecting company in CompanyManagementWindow: {e}")
-                
+
                 dlg.exec()
                 # Refresh after editing
                 self._notify_companies_changed()
@@ -1280,18 +1277,9 @@ class InvoiceTab(QWidget):
                 return
             except Exception as e:
                 print(f"[ITAB] Error opening CompanyManagementWindow: {e}")
-                QMessageBox.warning(self, "Plantilla", f"No se pudo abrir el editor de empresas:\n{e}\n\nIntentando editor clásico...")
-        
-        # Fallback a TemplateEditorDialog (deprecated)
-        if TemplateEditorDialog:
-            try:
-                dlg = TemplateEditorDialog(company_id=company_id, parent=self)
-                if dlg.exec():
-                    QMessageBox.information(self, "Plantilla", "Plantilla guardada correctamente.")
-            except Exception as e:
-                QMessageBox.critical(self, "Plantilla", f"No se pudo abrir el editor de plantillas:\n{e}")
+                QMessageBox.critical(self, "Branding", f"No se pudo abrir gestión de empresas:\n{e}")
         else:
-            QMessageBox.warning(self, "Plantilla", "No hay editor de plantillas disponible.")
+            QMessageBox.warning(self, "Branding", "CompanyManagementWindow no disponible.")
 
     def _open_company_manager(self):
         if CompanyManagementWindow is None:
