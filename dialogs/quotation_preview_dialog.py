@@ -389,132 +389,6 @@ class QuotationPreviewDialog(QDialog):
         self.btn_save_html.clicked.connect(self._on_save_html)
         self.btn_close.clicked.connect(self.reject)
 
-    def _load_html(self):
-        try:
-            if self.debug:
-                q = dict(self.raw_quotation or {})
-                if not q.get("client_name"):
-                    txt, ok = QInputDialog.getText(self, "Cliente - Nombre", "Ingrese Nombre o Razón Social del cliente:", text="")
-                    if ok and txt:
-                        self.raw_quotation["client_name"] = txt.strip()
-                if not q.get("client_rnc"):
-                    txt2, ok2 = QInputDialog.getText(self, "Cliente - RNC/Cédula", "Ingrese RNC / Cédula del cliente:", text="")
-                    if ok2 and txt2:
-                        self.raw_quotation["client_rnc"] = txt2.strip()
-
-            company, tpl, quotation = self._build_injectable_payloads()
-            self._last_payload = {"COMPANY": company, "TEMPLATE": tpl, "QUOTATION": quotation}
-
-            if build_html_with_json_block:
-                html = build_html_with_json_block(self.template_path, company, tpl, quotation)
-            else:
-                html = _local_build_html_with_json_block(self.template_path, company, tpl, quotation)
-
-            base = QUrl.fromLocalFile(os.path.abspath(os.path.dirname(self.template_path)) + os.sep)
-
-            try:
-                self.view.loadFinished.disconnect(self._on_loaded)
-            except Exception:
-                pass
-            self.view.loadFinished.connect(self._on_loaded)
-
-            self.view.setHtml(html, base)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo cargar la vista previa:\n{e}")
-
-    def _on_loaded(self, ok: bool):
-        if self.debug:
-            print(f"[QuotationPreviewDialog] page.loadFinished ok={ok}")
-
-        try:
-            payload = self._last_payload or {"COMPANY": {}, "TEMPLATE": {}, "QUOTATION": {}}
-            js_payload = json.dumps(payload, ensure_ascii=False).replace("</script>", "<\\/script>")
-
-            assign_js = f"""
-(function(){{
-  try {{
-    var payload = {js_payload};
-    window.COMPANY = payload.COMPANY || {{}}; 
-    window.TEMPLATE = payload.TEMPLATE || {{}}; 
-    window.QUOTATION = payload.QUOTATION || payload.INVOICE || {{}}; 
-    if (typeof renderAll === 'function') {{
-      try {{ renderAll(); }} catch (e) {{ console.warn('renderAll error', e); }}
-    }}
-    return true;
-  }} catch (e) {{
-    console.error('[INJECT ERROR]', e);
-    return false;
-  }}
-}})();
-"""
-            def after_assign(res):
-                if self.debug:
-                    print(f"[PREVIEW] assign_js ejecutado, resultado: {res}")
-
-                fallback_js = r"""
-(function(){
-  try {
-    var comp = window.COMPANY || {};
-    var tpl  = window.TEMPLATE || {};
-    var q    = window.QUOTATION || {};
-
-    // Nombre empresa
-    var nameNode = document.getElementById('company-name');
-    if (nameNode) nameNode.textContent = (comp.name || '').toString().toUpperCase();
-
-    // Meta
-    var metaContainer = document.getElementById('company-meta-container');
-    if (metaContainer) {
-      var parts = [];
-      if (comp.rnc) parts.push('RNC: ' + comp.rnc);
-      var address = comp.address || comp.address_line1 || 'Dirección no especificada';
-      parts.push(address);
-      if (comp.phone) parts.push('Teléfono: ' + comp.phone);
-      if (comp.email) parts.push('Email: ' + comp.email);
-      metaContainer.innerHTML = parts.map(function(x){return '<div>'+x+'</div>';}).join('');
-    }
-
-    // Firma Autorizada
-    var sigNode = document.getElementById('signature-name');
-    if (sigNode) {
-      var sig = comp.authorized_name || comp.signature_name || '';
-      sigNode.textContent = (sig && String(sig).trim()) ? String(sig).toUpperCase() : 'NOMBRE AUTORIZADO';
-    }
-
-    // Items
-    var tbody = document.getElementById('items-table-body');
-    if (tbody) {
-      var html = '';
-      var subtotal = 0;
-      (q.items || []).forEach(function(it, idx){
-        var qty = Number(it.quantity) || 0;
-        var up  = Number(it.unit_price) || 0;
-        var line = qty * up; subtotal += line;
-        var unit = (it.unit && String(it.unit).trim()) ? it.unit : 'UNID';
-        html += '<tr>';
-        html += '<td class="no">' + String(idx + 1).padStart(2, '0') + '</td>';
-        html += '<td class="desc"><div class="code">' + (it.code || '') + '</div><div class="sub-text">' + (it.description || '') + '</div></td>';
-        html += '<td class="unit">' + unit + '</td>';
-        html += '<td class="unit-price">' + new Intl.NumberFormat("es-DO",{minimumFractionDigits:2,maximumFractionDigits:2}).format(up) + '</td>';
-        var qfmt = (qty % 1 === 0) ? new Intl.NumberFormat("es-DO",{maximumFractionDigits:0}).format(qty) : new Intl.NumberFormat("es-DO",{minimumFractionDigits:2,maximumFractionDigits:2}).format(qty);
-        html += '<td class="qty">' + qfmt + '</td>';
-        html += '<td class="total">' + new Intl.NumberFormat("es-DO",{minimumFractionDigits:2,maximumFractionDigits:2}).format(line) + '</td>';
-        html += '</tr>';
-      });
-      tbody.innerHTML = html;
-    }
-  } catch(e) {
-    console.error('fallback renderer error', e);
-  }
-})();
-"""
-                self.view.page().runJavaScript(fallback_js)
-
-            self.view.page().runJavaScript(assign_js, after_assign)
-
-        except Exception as e:
-            print(f"[PREVIEW] Error inyectando payload: {e}")
 
     def _on_save_html(self):
         try:
@@ -575,239 +449,6 @@ class QuotationPreviewDialog(QDialog):
         except Exception as e:
             print(f"[QT-UPLOAD] Error mostrando popup enlace: {e}")
 
-    def _on_export_pdf(self):
-        import re
-        from datetime import datetime, timedelta
-
-        payload = getattr(self, "_last_payload", {}) or {}
-        comp = (payload.get("COMPANY") or self.raw_company or {}) or {}
-        q = (payload.get("QUOTATION") or self.raw_quotation or {}) or {}
-
-        company_name = (comp.get("name") or "").strip() or "EMPRESA"
-        display_number = (q.get("display_number") or q.get("number") or "").strip()
-        if not display_number:
-            letters = re.sub(r"[^A-Za-z]", "", (company_name.encode("ascii", "ignore").decode("ascii") if isinstance(company_name, str) else ""))
-            prefix = (letters[:3] or "EMP").upper()
-            try:
-                qid = int(q.get("id") or 0)
-            except Exception:
-                qid = 0
-            display_number = f"COT-{prefix}-{qid:06d}"
-
-        base = f"COT_{display_number}_{company_name}"
-        safe = re.sub(r"[^A-Za-z0-9._\\-]+", "_", base).strip("_")
-        suggested = f"{safe}.pdf"
-
-        fn, _ = QFileDialog.getSaveFileName(self, "Guardar Cotización como PDF", suggested, "PDF Files (*.pdf)")
-        if not fn:
-            return
-
-        save_path = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
-        try:
-            self.btn_export_pdf.setEnabled(False)
-        except Exception:
-            pass
-        print(f"[QT-EXPORT] Inicio export PDF. save_path={save_path}")
-
-        def finish_with_message(ok: bool, msg: str = None):
-            try:
-                self.btn_export_pdf.setEnabled(True)
-            except Exception:
-                pass
-            if ok:
-                print(f"[QT-EXPORT] PDF generado correctamente: {save_path}")
-                QMessageBox.information(self, "PDF", f"PDF generado:\n{save_path}")
-            else:
-                print(f"[QT-EXPORT] ERROR generando PDF: {msg}")
-                QMessageBox.warning(self, "PDF", msg or "No se pudo generar el PDF o está vacío.")
-
-        def try_request_bytes_fallback():
-            try:
-                wrote = False
-                def cb_bytes(data):
-                    nonlocal wrote
-                    try:
-                        bytes_data = bytes(data) if isinstance(data, QByteArray) else data
-                        if isinstance(bytes_data, (bytes, bytearray)):
-                            print(f"[QT-EXPORT] Fallback cb_bytes received length={len(bytes_data)}")
-                            with open(save_path, "wb") as f:
-                                f.write(bytes_data)
-                            wrote = True
-                        else:
-                            print(f"[QT-EXPORT] Fallback cb_bytes unexpected type: {type(bytes_data)}")
-                    except Exception as ex:
-                        print(f"[QT-EXPORT] Error en cb_bytes: {ex}")
-                try:
-                    self.view.page().printToPdf(cb_bytes)
-                except TypeError:
-                    try:
-                        self.view.page().printToPdf(save_path, cb_bytes)
-                    except Exception as ex2:
-                        print(f"[QT-EXPORT] Fallback printToPdf(save_path, cb_bytes) falló: {ex2}")
-                return wrote
-            except Exception as e:
-                print(f"[QT-EXPORT] Fallback para obtener bytes falló: {e}")
-                return False
-
-        def on_pdf_result(result):
-            print(f"[QT-EXPORT] on_pdf_result called. type(result)={type(result)}")
-            upload_url = None
-            file_written = False
-
-            try:
-                if isinstance(result, QByteArray):
-                    data_bytes = bytes(result)
-                    print(f"[QT-EXPORT] Received QByteArray length={len(data_bytes)}")
-                    with open(save_path, "wb") as f:
-                        f.write(data_bytes)
-                    file_written = True
-                    finish_with_message(True)
-                elif isinstance(result, (bytes, bytearray)):
-                    print(f"[QT-EXPORT] Received bytes-like length={len(result)}")
-                    with open(save_path, "wb") as f:
-                        f.write(result)
-                    file_written = True
-                    finish_with_message(True)
-                elif isinstance(result, bool) or result is None:
-                    if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                        size = os.path.getsize(save_path)
-                        print(f"[QT-EXPORT] File exists after printToPdf: size={size}")
-                        file_written = True
-                        finish_with_message(True)
-                    else:
-                        print("[QT-EXPORT] No file found on disk after printToPdf; trying fallback bytes callback")
-                        wrote = try_request_bytes_fallback()
-                        if wrote:
-                            file_written = True
-                            finish_with_message(True)
-                        else:
-                            finish_with_message(False, "Fallback: no se pudo obtener bytes del render")
-                            return
-                else:
-                    print(f"[QT-EXPORT] Resultado inesperado de printToPdf: {result} (type={type(result)})")
-                    finish_with_message(False, "Resultado inesperado al generar PDF.")
-                    return
-            except Exception as e:
-                print(f"[QT-EXPORT] Error processing printToPdf result: {e}")
-                finish_with_message(False, f"Error al procesar PDF generado: {e}")
-                return
-
-            if not file_written:
-                print("[QT-UPLOAD] No se escribió fichero local; abortando upload.")
-                return
-
-            try:
-                safe_company = ''.join(c for c in company_name if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_') or f"company_{comp.get('id','unknown')}"
-                file_name = (q.get("quotation_number") or q.get("number") or display_number or f"DRAFT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}").strip()
-                year = (q.get("date") or datetime.utcnow().strftime("%Y-%m-%d"))[:4]
-                month = (q.get("date") or datetime.utcnow().strftime("%Y-%m-%d"))[5:7]
-                storage_path = f"cotizacion/{safe_company}/{year}/{month}/{file_name}.pdf"
-                print(f"[QT-UPLOAD] Intentando upload local={save_path} -> storage_path={storage_path}")
-
-                logic = None
-                try:
-                    if hasattr(self.parent(), 'logic'):
-                        logic = getattr(self.parent(), 'logic')
-                except Exception:
-                    logic = None
-
-                da = None
-                if logic is not None:
-                    da = getattr(logic, "data_access", None) or logic
-                else:
-                    try:
-                        from data_access.firebase_data_access import FirebaseDataAccess  # type: ignore
-                        da = FirebaseDataAccess(user_id="system")
-                    except Exception:
-                        da = None
-
-                try:
-                    if logic and hasattr(logic, "upload_file_to_storage"):
-                        upload_url = logic.upload_file_to_storage(save_path, storage_path)
-                    elif da and hasattr(da, "upload_file_to_storage"):
-                        upload_url = da.upload_file_to_storage(save_path, storage_path)
-                    else:
-                        print("[QT-UPLOAD] No se encontró upload_file_to_storage en logic/data_access")
-                except Exception as ex_up:
-                    print(f"[QT-UPLOAD] Excepción durante upload: {ex_up}")
-
-                print(f"[QT-UPLOAD] upload_url -> {upload_url}")
-
-                expires_at = ""
-                if upload_url:
-                    try:
-                        days = int(getattr(facot_config, "PDF_SIGNED_URL_DAYS", 7) or 7)
-                        days = min(days, 7)
-                    except Exception:
-                        days = 7
-                    expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat()
-                else:
-                    try:
-                        storage_client = getattr(da, "storage", None)
-                        if storage_client:
-                            blob = storage_client.blob(storage_path)
-                            try:
-                                exists = blob.exists()
-                            except Exception as exb:
-                                exists = False
-                                print(f"[QT-UPLOAD] blob.exists() error: {exb}")
-                            print(f"[QT-UPLOAD] blob.exists() -> {exists} for {storage_path}")
-                            if exists and hasattr(da, "generate_signed_url_for_path"):
-                                try:
-                                    upload_url = da.generate_signed_url_for_path(storage_path, days=7)
-                                    expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
-                                    print(f"[QT-UPLOAD] Generated signed URL for existing blob: {upload_url}")
-                                except Exception as ex_gen:
-                                    print(f"[QT-UPLOAD] Error generating signed URL: {ex_gen}")
-                    except Exception as e_check:
-                        print(f"[QT-UPLOAD] Error comprobando blob: {e_check}")
-
-                quotation_id = q.get("id") or None
-                if quotation_id:
-                    try:
-                        if logic and hasattr(logic, "set_quotation_pdf_info"):
-                            try:
-                                logic.set_quotation_pdf_info(quotation_id, storage_path, upload_url, expires_at=expires_at)
-                            except TypeError:
-                                logic.set_quotation_pdf_info(quotation_id, storage_path, upload_url)
-                        elif da and hasattr(da, "set_quotation_pdf_info"):
-                            try:
-                                da.set_quotation_pdf_info(quotation_id, storage_path, upload_url, expires_at=expires_at)
-                            except TypeError:
-                                da.set_quotation_pdf_info(quotation_id, storage_path, upload_url)
-                        print(f"[QT-UPLOAD] set_quotation_pdf_info called for quotation_id={quotation_id}")
-                    except Exception as ex_set:
-                        print(f"[QT-UPLOAD] Error calling set_quotation_pdf_info: {ex_set}")
-                else:
-                    try:
-                        parent = getattr(self, "parent", None) and self.parent()
-                        if parent and hasattr(parent, "_preview_pdf_info_quotation"):
-                            parent._preview_pdf_info_quotation = {"storage_path": storage_path, "url": upload_url, "company_id": comp.get("id"), "quotation_number": file_name, "expires_at": expires_at}
-                            print("[QT-UPLOAD] Preview PDF info guardada en parent._preview_pdf_info_quotation")
-                        else:
-                            print("[QT-UPLOAD] NO quotation_id disponible. Debes guardar manualmente pdf_storage_path/pdf_url o implementar la asociación preview->quotation al guardar.")
-                    except Exception as e_parent:
-                        print(f"[QT-UPLOAD] Error guardando preview info en parent: {e_parent}")
-
-                if upload_url:
-                    try:
-                        self._show_uploaded_link_actions(upload_url)
-                    except Exception as e_popup:
-                        print(f"[QT-UPLOAD] Error mostrando popup enlace: {e_popup}")
-
-            except Exception as e_up_all:
-                print(f"[QT-UPLOAD] Error general post-upload: {e_up_all}")
-
-    def _on_print_dialog(self):
-        try:
-            def cb(_):
-                QMessageBox.information(self, "Imprimir", "Se generó PDF temporal para imprimir.")
-            try:
-                self.view.page().printToPdf(cb)
-            except TypeError:
-                self.view.page().printToPdf("temp_print.pdf", cb)
-        except Exception as e:
-            QMessageBox.critical(self, "Imprimir", f"No se pudo iniciar la impresión:\n{e}")
 
     def _on_export_excel(self):
         try:
@@ -917,54 +558,46 @@ class QuotationPreviewDialog(QDialog):
         quotation["due_date"] = (d + timedelta(days=30)).strftime("%Y-%m-%d")
 
     def _build_injectable_payloads(self):
+        """
+        Construye (company, tpl, quotation) para inyectar en HTML.
+        Alineado con invoice:
+        - tpl.primary_color y tpl.secondary_color tomados primero de company
+        - tpl.itbis_rate default 0.18
+        - apply_itbis: True solo si viene None (respeta False)
+        - calcula subtotal/itbis/total en QUOTATION
+        - propaga apply_itbis e itbis_rate en QUOTATION
+        """
         logic_ctrl = None
         try:
             if hasattr(self.parent(), 'logic'):
                 logic_ctrl = self.parent().logic
         except Exception:
-            pass
+            logic_ctrl = None
 
         company = _prepare_company_data_for_preview(self.raw_company, self.raw_template, logic_controller=logic_ctrl)
+
         tpl = dict(self.raw_template or {})
-        quotation = dict(self.raw_quotation or {})
+        # Igual que invoice: tomar colores desde company si existen
+        tpl["primary_color"] = company.get("primary_color") or tpl.get("primary_color", "#0087C3")
+        tpl["secondary_color"] = company.get("secondary_color") or tpl.get("secondary_color", "#F5F5F5")
 
-        tpl["itbis_rate"] = tpl.get("itbis_rate", 0.18)
-
-        quotation["items"] = quotation.get("items", [])
-
-        if quotation.get("apply_itbis") is None:
-            quotation["apply_itbis"] = True
-
-        try:
-            subtotal = float(quotation.get("subtotal") or 0.0)
-        except Exception:
-            subtotal = 0.0
-        if subtotal <= 0:
-            for it in quotation.get("items", []):
-                try:
-                    subtotal += float(it.get("quantity", 0)) * float(it.get("unit_price", 0))
-                except Exception:
-                    pass
+        # ITBIS rate como en invoice (default 0.18)
         try:
             itbis_rate = float(tpl.get("itbis_rate", 0.18) or 0.0)
         except Exception:
             itbis_rate = 0.18
+        tpl["itbis_rate"] = itbis_rate
 
-        apply_itbis = bool(quotation.get("apply_itbis"))
-        itbis_val = round(subtotal * itbis_rate, 2) if apply_itbis else 0.0
-        total_amount = round(subtotal + itbis_val, 2)
+        quotation = dict(self.raw_quotation or {})
+        quotation["items"] = list(quotation.get("items", []))
 
-        quotation["subtotal"] = round(subtotal, 2)
-        quotation["itbis"] = round(itbis_val, 2)
-        quotation["total_amount"] = round(total_amount, 2)
+        # Asegurar unidades
+        try:
+            _ensure_units(quotation, logic_controller=logic_ctrl)
+        except Exception as e:
+            print(f"[QT-PAYLOAD] _ensure_units error: {e}")
 
-        if company.get("logo_path"):
-            if tpl.get("show_logo") is False:
-                print("[QT-LOGO] tpl.show_logo estaba False, se fuerza a True porque hay logo_path.")
-            tpl["show_logo"] = True
-
-        _ensure_units(quotation, logic_controller=logic_ctrl)
-
+        # Due date desde company si no viene (igual que invoice)
         try:
             if not quotation.get("due_date") and company.get("invoice_due_date"):
                 quotation["due_date"] = company.get("invoice_due_date")
@@ -972,4 +605,362 @@ class QuotationPreviewDialog(QDialog):
         except Exception:
             pass
 
+        # apply_itbis: True solo si viene None (respeta False si viene)
+        raw_apply = quotation.get("apply_itbis")
+        if raw_apply is None:
+            apply_itbis = True
+        else:
+            apply_itbis = bool(raw_apply)
+
+        # subtotal
+        try:
+            subtotal = float(quotation.get("subtotal") or 0.0)
+        except Exception:
+            subtotal = 0.0
+        if subtotal <= 0:
+            for it in quotation.get("items", []):
+                try:
+                    qty = float(it.get("quantity", 0))
+                    up = float(it.get("unit_price", 0))
+                    subtotal += qty * up
+                except Exception:
+                    pass
+
+        # Calcular itbis/total (igual que invoice)
+        itbis_val = round((subtotal * itbis_rate) if apply_itbis else 0.0, 2)
+        total_amount = round(round(subtotal, 2) + itbis_val, 2)
+
+        quotation["subtotal"] = round(subtotal, 2)
+        quotation["itbis"] = itbis_val
+        quotation["total_amount"] = total_amount
+
+        # Propagar parámetros en QUOTATION para que la plantilla los lea desde ahí también
+        quotation["apply_itbis"] = apply_itbis
+        quotation["itbis_rate"] = itbis_rate
+
+        # Si hay logo y tpl.show_logo False, habilitar (igual que factura)
+        if company.get("logo_path"):
+            if tpl.get("show_logo") is False:
+                print("[QT-LOGO] tpl.show_logo estaba False, se fuerza a True porque hay logo_path.")
+            tpl["show_logo"] = True
+
+        try:
+            print(f"[QT-PAYLOAD] Final quotation.due='{quotation.get('due_date','')}', subtotal={quotation['subtotal']}, itbis={quotation['itbis']} (rate={quotation['itbis_rate']}, apply={quotation['apply_itbis']}), total={quotation['total_amount']}, primary={tpl['primary_color']}, secondary={tpl['secondary_color']}")
+        except Exception:
+            pass
+
         return company, tpl, quotation
+
+    def _on_loaded(self, ok: bool):
+        """
+        Replica el flujo de invoice_preview_dialog:
+        - Inyecta COMPANY, TEMPLATE, QUOTATION y llama renderAll() si existe.
+        - Fallback: asegura encabezados con IDs estándar si la plantilla no los setea.
+        Actualiza: company-name, company-meta-container (RNC, dirección, teléfono, email) y signature-name.
+        """
+        if self.debug:
+            print(f"[QuotationPreviewDialog] page.loadFinished ok={ok}")
+
+        try:
+            payload = self._last_payload or {"COMPANY": {}, "TEMPLATE": {}, "QUOTATION": {}}
+            js_payload = json.dumps(payload, ensure_ascii=False).replace("</script>", "<\\/script>")
+
+            assign_js = f"""
+    (function(){{
+    try {{
+        var payload = {js_payload};
+        window.COMPANY = payload.COMPANY || {{}};
+        window.TEMPLATE = payload.TEMPLATE || {{}};
+        window.QUOTATION = payload.QUOTATION || {{}};
+        if (typeof renderAll === 'function') {{
+        try {{ renderAll(); }} catch (e) {{ console.warn('renderAll error', e); }}
+        }}
+        return true;
+    }} catch (e) {{
+        console.error('[INJECT ERROR]', e);
+        return false;
+    }}
+    }})();
+    """
+
+            def after_assign(res):
+                if self.debug:
+                    try:
+                        script_show = "JSON.stringify({COMPANY: window.COMPANY || null, TEMPLATE: window.TEMPLATE || null, QUOTATION: window.QUOTATION || null})"
+                        self.view.page().runJavaScript(script_show, lambda res2: print("[DEBUG] injected objects:", res2))
+                    except Exception as e:
+                        print("[QuotationPreviewDialog] runJavaScript show error:", e)
+
+                # Fallback que replica los encabezados del invoice
+                fallback_js = r"""
+    (function(){
+    try {
+        var comp = window.COMPANY || {};
+        var tpl  = window.TEMPLATE || {};
+        var q    = window.QUOTATION || {};
+
+        function setText(id, text) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = text;
+        }
+        function fmtUpper(s) { return (s || '').toString().toUpperCase(); }
+
+        // Nombre empresa
+        setText('company-name', fmtUpper(comp.name || ''));
+
+        // Meta: RNC, dirección, teléfono, email (idéntico a invoice)
+        var metaContainer = document.getElementById('company-meta-container');
+        if (metaContainer) {
+        var parts = [];
+        if (comp.rnc) parts.push('RNC: ' + comp.rnc);
+        var address = comp.address || comp.address_line1 || 'Dirección no especificada';
+        parts.push(address);
+        if (comp.phone) parts.push('Teléfono: ' + comp.phone);
+        if (comp.email) parts.push('Email: ' + comp.email);
+        metaContainer.innerHTML = parts.map(function(x){return '<div>'+x+'</div>';}).join('');
+        }
+
+        // Nodos específicos si existen (no interfiere si no están)
+        setText('company-rnc', comp.rnc ? ('RNC: ' + comp.rnc) : '');
+        setText('company-address', comp.address || comp.address_line1 || '');
+        setText('company-phone', comp.phone ? ('Teléfono: ' + comp.phone) : '');
+        setText('company-email', comp.email ? ('Email: ' + comp.email) : '');
+
+        // Firma autorizada
+        var sig = comp.authorized_name || comp.signature_name || '';
+        setText('signature-name', (sig && String(sig).trim()) ? fmtUpper(sig) : 'NOMBRE AUTORIZADO');
+    } catch(e) {
+        console.error('fallback renderer error', e);
+    }
+    })();
+    """
+                self.view.page().runJavaScript(fallback_js)
+
+            self.view.page().runJavaScript(assign_js, after_assign)
+
+        except Exception as e:
+            print("[QuotationPreviewDialog] Error injecting payload:", e)
+            
+    def _load_html(self):
+        """
+        Igual que invoice: genera HTML con payload y conecta loadFinished.
+        """
+        try:
+            if self.debug:
+                q = dict(self.raw_quotation or {})
+                if not q.get("client_name"):
+                    txt, ok = QInputDialog.getText(self, "Cliente - Nombre", "Ingrese Nombre o Razón Social del cliente:", text="")
+                    if ok and txt:
+                        self.raw_quotation["client_name"] = txt.strip()
+                if not q.get("client_rnc"):
+                    txt2, ok2 = QInputDialog.getText(self, "Cliente - RNC/Cédula", "Ingrese RNC / Cédula del cliente:", text="")
+                    if ok2 and txt2:
+                        self.raw_quotation["client_rnc"] = txt2.strip()
+
+            company, tpl, quotation = self._build_injectable_payloads()
+            self._last_payload = {"COMPANY": company, "TEMPLATE": tpl, "QUOTATION": quotation}
+
+            if build_html_with_json_block:
+                html = build_html_with_json_block(self.template_path, company, tpl, quotation)
+            else:
+                html = _local_build_html_with_json_block(self.template_path, company, tpl, quotation)
+
+            if self.debug:
+                try:
+                    debug_path = os.path.join(os.getcwd(), "debug_quotation_preview.html")
+                    with open(debug_path, "w", encoding="utf-8") as f:
+                        f.write(html)
+                    print(f"[QuotationPreviewDialog] Wrote debug HTML to: {debug_path}")
+                except Exception:
+                    pass
+
+            base = QUrl.fromLocalFile(os.path.abspath(os.path.dirname(self.template_path)) + os.sep)
+
+            try:
+                self.view.loadFinished.disconnect(self._on_loaded)
+            except Exception:
+                pass
+            self.view.loadFinished.connect(self._on_loaded)
+
+            self.view.setHtml(html, base)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo cargar la vista previa:\n{e}")
+
+
+    def _on_export_pdf(self):
+        """
+        Genera PDF a disco usando el overload con callback de PyQt6 (sin QWebEnginePage),
+        espera unos ms para asegurar render del DOM, luego sube a Storage y muestra la URL.
+        """
+        import re
+        from PyQt6.QtCore import QTimer, QByteArray
+        from datetime import datetime, timedelta
+
+        payload = getattr(self, "_last_payload", {}) or {}
+        comp = (payload.get("COMPANY") or self.raw_company or {}) or {}
+        q = (payload.get("QUOTATION") or self.raw_quotation or {}) or {}
+
+        company_name = (comp.get("name") or "").strip() or "EMPRESA"
+        display_number = (q.get("display_number") or q.get("number") or "").strip()
+        if not display_number:
+            letters = re.sub(r"[^A-Za-z]", "", (company_name.encode("ascii", "ignore").decode("ascii") if isinstance(company_name, str) else ""))
+            prefix = (letters[:3] or "EMP").upper()
+            try:
+                qid = int(q.get("id") or 0)
+            except Exception:
+                qid = 0
+            display_number = f"COT-{prefix}-{qid:06d}"
+
+        base = f"COT_{display_number}_{company_name}"
+        safe = re.sub(r"[^A-Za-z0-9._\\-]+", "_", base).strip("_")
+        suggested = f"{safe}.pdf"
+
+        fn, _ = QFileDialog.getSaveFileName(self, "Guardar Cotización como PDF", suggested, "PDF Files (*.pdf)")
+        if not fn:
+            return
+
+        save_path = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
+        try:
+            self.btn_export_pdf.setEnabled(False)
+        except Exception:
+            pass
+        print(f"[QT-EXPORT] Inicio export PDF. save_path={save_path}")
+
+        def finish_with_message(ok: bool, msg: str = None):
+            try:
+                self.btn_export_pdf.setEnabled(True)
+            except Exception:
+                pass
+            if ok:
+                print(f"[QT-EXPORT] PDF generado correctamente: {save_path}")
+                QMessageBox.information(self, "PDF", f"PDF generado:\n{save_path}")
+            else:
+                print(f"[QT-EXPORT] ERROR generando PDF: {msg}")
+                QMessageBox.warning(self, "PDF", msg or "No se pudo generar el PDF o está vacío.")
+
+        def do_upload():
+            try:
+                safe_company = ''.join(c for c in company_name if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_') or f"company_{comp.get('id','unknown')}"
+                file_name = (q.get("quotation_number") or q.get("number") or display_number or f"DRAFT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}").strip()
+                year = (q.get("date") or datetime.utcnow().strftime("%Y-%m-%d"))[:4]
+                month = (q.get("date") or datetime.utcnow().strftime("%Y-%m-%d"))[5:7]
+                storage_path = f"cotizacion/{safe_company}/{year}/{month}/{file_name}.pdf"
+                print(f"[QT-UPLOAD] Intentando upload local={save_path} -> storage_path={storage_path}")
+
+                logic = None
+                try:
+                    if hasattr(self.parent(), 'logic'):
+                        logic = getattr(self.parent(), 'logic')
+                except Exception:
+                    logic = None
+
+                da = None
+                if logic is not None:
+                    da = getattr(logic, "data_access", None) or logic
+                else:
+                    try:
+                        from data_access.firebase_data_access import FirebaseDataAccess  # type: ignore
+                        da = FirebaseDataAccess(user_id="system")
+                    except Exception:
+                        da = None
+
+                upload_url = None
+                try:
+                    if logic and hasattr(logic, "upload_file_to_storage"):
+                        upload_url = logic.upload_file_to_storage(save_path, storage_path)
+                    elif da and hasattr(da, "upload_file_to_storage"):
+                        upload_url = da.upload_file_to_storage(save_path, storage_path)
+                    else:
+                        print("[QT-UPLOAD] No se encontró upload_file_to_storage en logic/data_access")
+                except Exception as ex_up:
+                    print(f"[QT-UPLOAD] Excepción durante upload: {ex_up}")
+
+                print(f"[QT-UPLOAD] upload_url -> {upload_url}")
+
+                expires_at = ""
+                if upload_url:
+                    try:
+                        days = int(getattr(facot_config, "PDF_SIGNED_URL_DAYS", 7) or 7)
+                        days = min(days, 7)
+                    except Exception:
+                        days = 7
+                    expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat()
+
+                quotation_id = q.get("id") or None
+                if quotation_id:
+                    try:
+                        if logic and hasattr(logic, "set_quotation_pdf_info"):
+                            try:
+                                logic.set_quotation_pdf_info(quotation_id, storage_path, upload_url, expires_at=expires_at)
+                            except TypeError:
+                                logic.set_quotation_pdf_info(quotation_id, storage_path, upload_url)
+                        elif da and hasattr(da, "set_quotation_pdf_info"):
+                            try:
+                                da.set_quotation_pdf_info(quotation_id, storage_path, upload_url, expires_at=expires_at)
+                            except TypeError:
+                                da.set_quotation_pdf_info(quotation_id, storage_path, upload_url)
+                        print(f"[QT-UPLOAD] set_quotation_pdf_info called for quotation_id={quotation_id}")
+                    except Exception as ex_set:
+                        print(f"[QT-UPLOAD] Error calling set_quotation_pdf_info: {ex_set}")
+                else:
+                    try:
+                        parent = getattr(self, "parent", None) and self.parent()
+                        if parent and hasattr(parent, "_preview_pdf_info_quotation"):
+                            parent._preview_pdf_info_quotation = {"storage_path": storage_path, "url": upload_url, "company_id": comp.get("id"), "quotation_number": file_name, "expires_at": expires_at}
+                            print("[QT-UPLOAD] Preview PDF info guardada en parent._preview_pdf_info_quotation")
+                        else:
+                            print("[QT-UPLOAD] NO quotation_id disponible. Debes guardar manualmente pdf_storage_path/pdf_url o implementar la asociación preview->quotation al guardar.")
+                    except Exception as e_parent:
+                        print(f"[QT-UPLOAD] Error guardando preview info en parent: {e_parent}")
+
+                if upload_url:
+                    try:
+                        self._show_uploaded_link_actions(upload_url)
+                    except Exception as e_popup:
+                        print(f"[QT-UPLOAD] Error mostrando popup enlace: {e_popup}")
+
+            except Exception as e_up_all:
+                print(f"[QT-UPLOAD] Error general post-upload: {e_up_all}")
+
+        def start_print():
+            # Callback que escribe bytes directo a disco
+            def cb_bytes(data):
+                try:
+                    bytes_data = bytes(data) if isinstance(data, QByteArray) else data
+                    if isinstance(bytes_data, (bytes, bytearray)):
+                        print(f"[QT-EXPORT] cb_bytes length={len(bytes_data)}")
+                        with open(save_path, "wb") as f:
+                            f.write(bytes_data)
+                        finish_with_message(True)
+                        do_upload()
+                    else:
+                        print(f"[QT-EXPORT] cb_bytes tipo inesperado: {type(bytes_data)}")
+                        finish_with_message(False, "Tipo inesperado en printToPdf callback.")
+                except Exception as ex:
+                    print(f"[QT-EXPORT] Error en cb_bytes: {ex}")
+                    finish_with_message(False, f"Error en cb_bytes: {ex}")
+
+            try:
+                # Usar overload con callback; evitar importar QWebEnginePage
+                printed = False
+                try:
+                    self.view.page().printToPdf(cb_bytes)
+                    printed = True
+                except TypeError:
+                    try:
+                        self.view.page().printToPdf(save_path, cb_bytes)
+                        printed = True
+                    except Exception as ex3:
+                        print(f"[QT-EXPORT] printToPdf(save_path, cb_bytes) falló: {ex3}")
+                if not printed:
+                    print("[QT-EXPORT] No se pudo invocar printToPdf con ningún overload.")
+                    finish_with_message(False, "No se pudo invocar printToPdf.")
+            except Exception as e:
+                print(f"[QT-EXPORT] Error al llamar printToPdf: {e}")
+                finish_with_message(False, f"Error al generar PDF: {e}")
+
+        # Esperar a que el DOM esté listo (renderAll/fallback). Pequeño delay.
+        delay_ms = int(getattr(facot_config, "PDF_RENDER_DELAY_MS", 400) or 400)
+        print(f"[QT-EXPORT] Esperando {delay_ms} ms antes de printToPdf para asegurar render completo...")
+        QTimer.singleShot(delay_ms, start_print)
