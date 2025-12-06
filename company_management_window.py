@@ -360,39 +360,126 @@ class CompanyManagementWindow(QDialog):
         fn, _ = QFileDialog.getOpenFileName(self, "Seleccionar Logo", "", "Imágenes (*.png *.jpg *.jpeg *.svg);;Todos los archivos (*)")
         if not fn:
             return
+        
+        print(f"[COMPANY-LOGO] Selected logo file: {fn}")
+        
         if self.selected_company_id:
+            # Empresa existente: intentar subir a storage
             try:
-                rel = copy_logo_to_assets(fn, int(self.selected_company_id))
+                cid = int(self.selected_company_id)
+                storage_path = f"logos/company_{cid}{os.path.splitext(fn)[1]}"
+                
+                # Intentar upload_file_to_storage
+                url = None
+                if hasattr(self.logic, 'upload_file_to_storage'):
+                    try:
+                        url = self.logic.upload_file_to_storage(fn, storage_path)
+                        if url:
+                            print(f"[COMPANY-LOGO] Successfully uploaded to storage: {url}")
+                            self.logo_path_edit.setText(url)
+                            QMessageBox.information(self, "Logo", f"Logo subido exitosamente al storage.\n\nURL: {url}")
+                            return
+                        else:
+                            print(f"[COMPANY-LOGO] upload_file_to_storage returned None, falling back")
+                    except Exception as e:
+                        print(f"[COMPANY-LOGO] upload_file_to_storage failed: {e}, falling back")
+                
+                # Fallback a copy_logo_to_assets
+                print(f"[COMPANY-LOGO] Falling back to copy_logo_to_assets")
+                rel = copy_logo_to_assets(fn, cid)
                 self.logo_path_edit.setText(rel)
+                QMessageBox.information(self, "Logo", f"Logo copiado a assets (ruta relativa):\n\n{rel}")
             except Exception as e:
-                QMessageBox.warning(self, "Logo", f"No se pudo copiar el logo:\n{e}")
+                QMessageBox.warning(self, "Logo", f"No se pudo procesar el logo:\n{e}")
         else:
+            # Nueva empresa: guardar path temporalmente
             self._pending_logo_source_abs = fn
             self.logo_path_edit.setText(os.path.basename(fn))
+            print(f"[COMPANY-LOGO] Pending logo for new company: {fn}")
 
     def _prepare_logo_to_save(self, current_logo_value: str, company_id: int) -> str:
-        # Si había un logo pendiente de copiar (caso nuevo registro)
+        """
+        Prepara el logo para guardar: intenta subir a storage, fallback a copy_logo_to_assets.
+        
+        Returns:
+            URL (si se subió a storage) o ruta relativa (si se copió a assets)
+        """
+        print(f"[COMPANY-LOGO] _prepare_logo_to_save: current_value='{current_logo_value}', company_id={company_id}")
+        
+        # Caso 1: pending_logo (nueva empresa o cambio de logo)
         if self._pending_logo_source_abs:
+            local_path = self._pending_logo_source_abs
+            print(f"[COMPANY-LOGO] Processing pending logo: {local_path}")
+            
+            # Intentar subir a storage
+            storage_path = f"logos/company_{company_id}{os.path.splitext(local_path)[1]}"
+            if hasattr(self.logic, 'upload_file_to_storage'):
+                try:
+                    url = self.logic.upload_file_to_storage(local_path, storage_path)
+                    if url and url.startswith(('http://', 'https://')):
+                        print(f"[COMPANY-LOGO] Uploaded pending logo to storage: {url}")
+                        self._pending_logo_source_abs = None
+                        return url
+                    else:
+                        print(f"[COMPANY-LOGO] upload_file_to_storage returned non-URL: {url}")
+                except Exception as e:
+                    print(f"[COMPANY-LOGO] Error uploading pending logo to storage: {e}")
+            
+            # Fallback a copy_logo_to_assets
             try:
-                rel = copy_logo_to_assets(self._pending_logo_source_abs, int(company_id))
+                rel = copy_logo_to_assets(local_path, int(company_id))
+                print(f"[COMPANY-LOGO] Copied pending logo to assets: {rel}")
                 self._pending_logo_source_abs = None
                 return rel
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[COMPANY-LOGO] Error copying pending logo to assets: {e}")
+                self._pending_logo_source_abs = None
+                return ""
 
+        # Caso 2: valor actual es URL http(s) - mantener
+        if current_logo_value and current_logo_value.startswith(('http://', 'https://')):
+            print(f"[COMPANY-LOGO] Current value is URL, keeping: {current_logo_value}")
+            return current_logo_value
+
+        # Caso 3: valor actual vacío
         if not current_logo_value:
+            print(f"[COMPANY-LOGO] No logo value")
             return ""
 
+        # Caso 4: ruta file:/// o absoluta - intentar subir o relativizar
         val = current_logo_value
         if val.lower().startswith("file:///") or os.path.isabs(val):
+            # Primero intentar relativizar si ya está bajo assets
             rel_try = relativize_if_under_assets(val)
             if rel_try != val:
+                print(f"[COMPANY-LOGO] Relativized existing logo: {rel_try}")
                 return rel_try
+            
+            # Extraer ruta absoluta
             abs_src = val[8:].replace("/", os.sep) if val.lower().startswith("file:///") else val
+            
+            # Intentar subir a storage
+            if hasattr(self.logic, 'upload_file_to_storage') and os.path.exists(abs_src):
+                storage_path = f"logos/company_{company_id}{os.path.splitext(abs_src)[1]}"
+                try:
+                    url = self.logic.upload_file_to_storage(abs_src, storage_path)
+                    if url and url.startswith(('http://', 'https://')):
+                        print(f"[COMPANY-LOGO] Uploaded absolute path to storage: {url}")
+                        return url
+                except Exception as e:
+                    print(f"[COMPANY-LOGO] Error uploading absolute path to storage: {e}")
+            
+            # Fallback a copy_logo_to_assets
             try:
-                return copy_logo_to_assets(abs_src, int(company_id))
-            except Exception:
+                rel = copy_logo_to_assets(abs_src, int(company_id))
+                print(f"[COMPANY-LOGO] Copied absolute path to assets: {rel}")
+                return rel
+            except Exception as e:
+                print(f"[COMPANY-LOGO] Error copying absolute path to assets: {e}")
                 return ""
+        
+        # Caso 5: ruta relativa - mantener
+        print(f"[COMPANY-LOGO] Keeping relative path: {val}")
         return val.replace("\\", "/")
 
     def _dateedit_to_str(self, de: QDateEdit) -> str:

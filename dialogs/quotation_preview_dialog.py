@@ -238,7 +238,24 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
     company["signature_name"] = sig
     company["authorized_name"] = sig
 
+    # Logo resuelto con soporte para storage signed URLs
     resolved = _resolve_logo_uri(company, tpl_from_db) or company.get("logo_path") or ""
+    
+    # Si resolved no es http/https/file y parece storage-relative, pedir signed URL
+    if resolved and not resolved.startswith(('http://', 'https://', 'file:///')):
+        # Podría ser ruta relativa a storage (ej: "logos/company_123.png")
+        if logic_controller and hasattr(logic_controller, 'generate_signed_url_for_path'):
+            try:
+                print(f"[QT-LOGO] Attempting to generate signed URL for storage path: {resolved}")
+                signed_url = logic_controller.generate_signed_url_for_path(resolved, days=7)
+                if signed_url and signed_url.startswith(('http://', 'https://')):
+                    print(f"[QT-LOGO] Using signed URL: {signed_url}")
+                    resolved = signed_url
+                else:
+                    print(f"[QT-LOGO] No signed URL generated, keeping original: {resolved}")
+            except Exception as e:
+                print(f"[QT-LOGO] Error generating signed URL: {e}")
+    
     company["logo_path"] = resolved
 
     try:

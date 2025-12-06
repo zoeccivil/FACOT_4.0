@@ -137,7 +137,7 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
 
 # Coloca esto fuera de la clase (función helper) o reemplázala si ya existe
 def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_db: Optional[Dict[str, Any]] = None, logic_controller=None) -> Dict[str, Any]:
-    """Prepara datos de empresa asegurando vencimiento y firma."""
+    """Prepara datos de empresa asegurando vencimiento, firma y logo con signed URLs."""
     company = dict(company_record or {})
     cid = company.get("id")
 
@@ -161,10 +161,29 @@ def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_d
     company["authorized_name"] = sig
     company["signature_name"] = sig
 
-    # 3. Normalizar Dirección y Logo (lógica existente abreviada)
+    # 3. Normalizar Dirección y Logo
     company["name"] = company.get("name") or "Nombre Empresa"
     company["rnc"] = company.get("rnc") or ""
-    # ... (resto de normalización de dirección) ...
+    
+    # Logo con soporte para storage signed URLs
+    logo_path = company.get("logo_path") or (tpl_from_db or {}).get("logo_path") or ""
+    
+    # Si logo_path no es http/https/file y parece storage-relative, pedir signed URL
+    if logo_path and not logo_path.startswith(('http://', 'https://', 'file:///')):
+        # Podría ser ruta relativa a storage (ej: "logos/company_123.png")
+        if logic_controller and hasattr(logic_controller, 'generate_signed_url_for_path'):
+            try:
+                print(f"[INV-LOGO] Attempting to generate signed URL for storage path: {logo_path}")
+                signed_url = logic_controller.generate_signed_url_for_path(logo_path, days=7)
+                if signed_url and signed_url.startswith(('http://', 'https://')):
+                    print(f"[INV-LOGO] Using signed URL: {signed_url}")
+                    logo_path = signed_url
+                else:
+                    print(f"[INV-LOGO] No signed URL generated, keeping original: {logo_path}")
+            except Exception as e:
+                print(f"[INV-LOGO] Error generating signed URL: {e}")
+    
+    company["logo_path"] = logo_path
     
     return company
 
