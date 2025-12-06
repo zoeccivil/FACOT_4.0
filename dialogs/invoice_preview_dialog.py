@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox, QSizePolicy, QInputDialog
 )
-from PyQt6.QtCore import QUrl, QTimer, QByteArray
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # Config opcional (vencimientos y logos)
@@ -18,8 +18,8 @@ try:
 except Exception:
     class _Cfg:
         INVOICE_DUE_DAYS = 0
-        INVOICE_FIXED_DUE_DATE = "" # "YYYY-MM-DD"
-        COMPANY_LOGOS = {} # {company_id(str/int) or name: path}
+        INVOICE_FIXED_DUE_DATE = ""  # "YYYY-MM-DD"
+        COMPANY_LOGOS = {}  # {company_id(str/int) or name: path}
         DEFAULT_LOGO_PATH = ""
     config_facot = _Cfg()
 
@@ -59,7 +59,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
     4) config_facot.DEFAULT_LOGO_PATH
     Devuelve file://... si se puede resolver a ruta existente; si no, el valor tal cual.
     """
-    # 1) DB + 2) Template
     candidates: List[str] = []
     db_logo = (company or {}).get("logo_path") or ""
     if db_logo:
@@ -68,7 +67,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
     if tpl_logo:
         candidates.append(tpl_logo)
 
-    # 3) config_facot map
     logos = getattr(config_facot, "COMPANY_LOGOS", {}) or {}
     cid = company.get("id")
     name = (company.get("name") or "").strip()
@@ -79,7 +77,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
     if name and name in logos:
         candidates.append(logos[name])
 
-    # 4) default
     default_logo = getattr(config_facot, "DEFAULT_LOGO_PATH", "") or ""
     if default_logo:
         candidates.append(default_logo)
@@ -96,7 +93,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
         if not c:
             continue
 
-        # Acepta file:/// ya preparado
         if isinstance(c, str) and c.startswith("file:///"):
             local = c.replace("file:///", "")
             if os.path.exists(local):
@@ -106,7 +102,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
                 print(f"  .. skip file URI (not found): {c}")
                 continue
 
-        # Relativa a data root
         try:
             rel = os.path.join(root, c)
             if os.path.exists(rel):
@@ -118,7 +113,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
         except Exception as e:
             print(f"  .. join error relative '{c}': {e}")
 
-        # Absoluta
         if os.path.isabs(c) and os.path.exists(c):
             uri = _to_file_uri(c)
             print(f"  -> PICK absolute path: '{c}' -> '{uri}'")
@@ -126,7 +120,6 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
         elif os.path.isabs(c):
             print(f"  .. absolute path not found: '{c}'")
 
-        # URL http/https
         if c.startswith(("http://", "https://")):
             print(f"  -> PICK http(s) URL: {c}")
             return c
@@ -135,107 +128,159 @@ def _resolve_logo_uri(company: Dict[str, Any], tpl_from_db: Optional[Dict[str, A
     return ""
 
 
-# Coloca esto fuera de la clase (función helper) o reemplázala si ya existe
 def _prepare_company_data_for_preview(company_record: Dict[str, Any], tpl_from_db: Optional[Dict[str, Any]] = None, logic_controller=None) -> Dict[str, Any]:
-    """Prepara datos de empresa asegurando vencimiento y firma."""
+    """
+    Versión híbrida para factura:
+    - Prioriza branding desde companies/<id> (Opción A): primary_color, secondary_color, header_lines, footer_lines, font_name, font_size, layout, logo_path (URL pública)
+    - Mantiene tu lógica y trazas para due_date y firma autorizada
+    - No genera signed URLs para logo_path (se usa el valor guardado)
+    """
     company = dict(company_record or {})
-    cid = company.get("id")
 
-    # 1. Recuperar datos frescos si tenemos logic_controller (VITAL para Authorized Name y Due Date)
-    if logic_controller and cid:
-        try:
-            # Obtener detalles completos (incluye firma/authorized_name)
+    print("\n[INV-LOGO] _prepare_company_data_for_preview() - INPUTS")
+    try:
+        print(f"  INPUT company: id={company.get('id')} name='{company.get('name')}' logo_path='{company.get('logo_path')}'")
+        print(f"  INPUT template.logo_path='{(tpl_from_db or {}).get('logo_path')}'")
+    except Exception:
+        pass
+
+    try:
+        cid = company.get("id")
+        if logic_controller and cid:
             fresh = logic_controller.get_company_details(cid) or {}
-            company.update(fresh)
-            
-            # Obtener vencimiento explícitamente
+            print(f"  [FALLBACK] get_company_details({cid}) -> {fresh}")
+            for key in [
+                "address_line1","address_line2","address","signature_name","authorized_name","logo_path",
+                "phone","email","rnc","invoice_due_date",
+                "primary_color","secondary_color","font_name","font_size","layout","header_lines","footer_lines","show_logo"
+            ]:
+                if company.get(key) in (None, "", []) and fresh.get(key) is not None:
+                    company[key] = fresh.get(key)
             if hasattr(logic_controller, 'get_company_due_date'):
                 due = logic_controller.get_company_due_date(cid)
-                if due: company['invoice_due_date'] = due
-        except Exception as e:
-            print(f"[PREVIEW] Warning fetching fresh company data: {e}")
+                if due:
+                    company['invoice_due_date'] = due
+    except Exception as e:
+        print(f"  [FALLBACK ERROR] get_company_details failed: {e}")
 
-    # 2. Normalizar Firma / Nombre Autorizado
-    # Busca en varios campos posibles y unifica en 'authorized_name'
-    sig = (company.get("authorized_name") or company.get("signature_name") or company.get("firma") or "").strip()
-    company["authorized_name"] = sig
-    company["signature_name"] = sig
+    from datetime import datetime
+    def _normalize_date_str(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        try:
+            s2 = str(s).strip()
+            if len(s2) >= 10 and s2[4] == '-' and s2[7] == '-':
+                return s2[:10]
+            try:
+                d = datetime.fromisoformat(s2[:19])
+                return d.strftime("%Y-%m-%d")
+            except Exception:
+                try:
+                    parts = s2.replace("/", "-").split("-")
+                    if len(parts) >= 3:
+                        y, m, d = parts[0], parts[1], parts[2]
+                        if len(y) == 4:
+                            return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+                except Exception:
+                    pass
+            return ""
+        except Exception:
+            return ""
 
-    # 3. Normalizar Dirección y Logo (lógica existente abreviada)
+    try:
+        if not (company.get("invoice_due_date") or "").strip() and logic_controller:
+            for fn in ("get_company_due_date", "get_company_invoice_due_date", "get_company_due", "get_invoice_due_date"):
+                try:
+                    if hasattr(logic_controller, fn):
+                        v = getattr(logic_controller, fn)(company.get("id"))
+                        v_norm = _normalize_date_str(v)
+                        if v_norm:
+                            company["invoice_due_date"] = v_norm
+                            print(f"  [FALLBACK-DUE] obtained due_date via {fn}: {v_norm}")
+                            break
+                except Exception as e_fn:
+                    print(f"  [FALLBACK-DUE] {fn} raised: {e_fn}")
+            try:
+                da = getattr(logic_controller, "data_access", None) or getattr(logic_controller, "dataAccess", None)
+                if da and hasattr(da, "db"):
+                    mid = f"{company.get('id')}_meta"
+                    doc = da.db.collection("sequences").document(mid).get()
+                    if doc and getattr(doc, "exists", False):
+                        dd = doc.to_dict() or {}
+                        v2 = dd.get("invoice_due_date") or dd.get("due_date") or ""
+                        v2n = _normalize_date_str(v2)
+                        if v2n and not company.get("invoice_due_date"):
+                            company["invoice_due_date"] = v2n
+                            print(f"  [FALLBACK-DUE] obtained due_date from sequences/{mid}: {v2n}")
+            except Exception as e_da:
+                print(f"  [FALLBACK-DUE] data_access check error: {e_da}")
+    except Exception:
+        pass
+
     company["name"] = company.get("name") or "Nombre Empresa"
-    company["rnc"] = company.get("rnc") or ""
-    # ... (resto de normalización de dirección) ...
-    
+    company["rnc"] = company.get("rnc") or company.get("rnc_number") or ""
+    company["phone"] = company.get("phone") or company.get("telefono") or ""
+    company["email"] = company.get("email") or company.get("correo") or ""
+
+    a1 = (company.get("address_line1") or company.get("address") or "").strip()
+    a2 = (company.get("address_line2") or "").strip()
+    company["address_line1"] = a1
+    company["address_line2"] = a2
+    address_full = (a1 + (" " + a2 if a2 else "")).strip() or (company.get("address") or "").strip()
+    company["address"] = address_full or "Dirección no especificada"
+
+    sig = ""
+    for k in ("signature_name", "authorized_name", "firma", "signature", "authorized_signer", "authorized"):
+        v = company.get(k)
+        if v and isinstance(v, str) and v.strip():
+            sig = v.strip()
+            break
+    if not sig and logic_controller and company.get("id"):
+        try:
+            details2 = logic_controller.get_company_details(company.get("id")) or {}
+            for k in ("signature_name", "authorized_name", "firma", "signature", "authorized_signer", "authorized"):
+                v = details2.get(k)
+                if v and isinstance(v, str) and v.strip():
+                    sig = v.strip()
+                    break
+            if sig:
+                print(f"  [FALLBACK-2] Found signature in remote details: '{sig}'")
+        except Exception as e:
+            print(f"  [FALLBACK-2 ERROR] fetching company details for signature: {e}")
+    company["signature_name"] = sig
+    company["authorized_name"] = sig
+
+    resolved = company.get("logo_path") or (tpl_from_db or {}).get("logo_path") or ""
+    company["logo_path"] = resolved
+
+    company["primary_color"] = company.get("primary_color") or (tpl_from_db or {}).get("primary_color") or "#0087C3"
+    company["secondary_color"] = company.get("secondary_color") or (tpl_from_db or {}).get("secondary_color") or "#F5F5F5"
+    company["header_lines"] = company.get("header_lines") or (tpl_from_db or {}).get("header_lines") or ["", "", ""]
+    company["footer_lines"] = company.get("footer_lines") or (tpl_from_db or {}).get("footer_lines") or []
+    company["font_name"] = company.get("font_name") or (tpl_from_db or {}).get("font_name") or "Inter"
+    company["font_size"] = company.get("font_size") or (tpl_from_db or {}).get("font_size") or 13
+    company["layout"] = company.get("layout") or (tpl_from_db or {}).get("layout") or "default"
+
+    try:
+        company["invoice_due_date"] = _normalize_date_str(company.get("invoice_due_date") or "")
+    except Exception:
+        company["invoice_due_date"] = (company.get("invoice_due_date") or "").strip()
+
+    print("[INV-LOGO] _prepare_company_data_for_preview() - OUTPUTS")
+    try:
+        print(f"  OUTPUT company.logo_path='{company.get('logo_path')}' (display-ready)")
+        print(f"  OUTPUT company.primary_color='{company.get('primary_color')}', secondary_color='{company.get('secondary_color')}'")
+        print(f"  OUTPUT company.header_lines={company.get('header_lines')}, footer_lines={company.get('footer_lines')}")
+        print(f"  OUTPUT company.name='{company.get('name')}', rnc='{company.get('rnc')}'")
+        print(f"  OUTPUT company.address='{company.get('address')}'")
+        print(f"  OUTPUT company.signature_name='{company.get('signature_name')}' (authorized_name='{company.get('authorized_name')}')")
+        print(f"  OUTPUT company.invoice_due_date='{company.get('invoice_due_date','')}'")
+    except Exception:
+        pass
+
     return company
 
-def _on_export_pdf(self):
-        inv_number = self._last_payload.get('INVOICE', {}).get('display_number', 'draft')
-        fn, _ = QFileDialog.getSaveFileName(self, "Guardar PDF", f"factura_{inv_number}.pdf", "PDF Files (*.pdf)")
-        if not fn: return
-        
-        save_path = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
-        self.btn_export_pdf.setEnabled(False)
 
-        # Definir el callback para cuando termine la impresión
-        def on_pdf_finished(file_path, success):
-            # Desconectar para evitar llamadas múltiples si se reutiliza el diálogo
-            try:
-                self.view.page().pdfPrintingFinished.disconnect()
-            except:
-                pass
-            
-            self.btn_export_pdf.setEnabled(True)
-            
-            if not success:
-                QMessageBox.warning(self, "Error", "No se pudo generar el PDF (falló el proceso de impresión).")
-                return
-            
-            QMessageBox.information(self, "PDF", f"PDF generado correctamente en:\n{file_path}")
-            
-            # --- LÓGICA DE SUBIDA A FIREBASE (Igual que tenías) ---
-            try:
-                logic = getattr(self.parent(), 'logic', None)
-                upload_url = None
-                
-                # Construir ruta Storage
-                comp = self._last_payload.get("COMPANY", {})
-                inv = self._last_payload.get("INVOICE", {})
-                safe_comp = "".join(c for c in (comp.get("name") or "empresa") if c.isalnum())
-                year = (inv.get("date") or datetime.now().strftime("%Y-%m-%d"))[:4]
-                storage_path = f"factura/{safe_comp}/{year}/{os.path.basename(file_path)}"
-                
-                # Intentar subir
-                if logic and hasattr(logic, 'upload_file_to_storage'):
-                    upload_url = logic.upload_file_to_storage(file_path, storage_path)
-                elif hasattr(logic, 'data_access') and hasattr(logic.data_access, 'upload_file_to_storage'):
-                    upload_url = logic.data_access.upload_file_to_storage(file_path, storage_path)
-                
-                if upload_url:
-                    print(f"[PREVIEW] PDF Subido: {upload_url}")
-                    # COMUNICAR AL PARENT (InvoiceTab) para guardar metadata al crear la factura
-                    if self.parent() and hasattr(self.parent(), '_preview_pdf_info'):
-                        self.parent()._preview_pdf_info = {
-                            "storage_path": storage_path,
-                            "url": upload_url,
-                            "company_id": comp.get("id"),
-                            "expires_at": (datetime.utcnow() + timedelta(days=7)).isoformat()
-                        }
-                    # Mostrar popup de enlace
-                    self._show_uploaded_link_actions(upload_url)
-            except Exception as e:
-                print(f"[PREVIEW] Error subiendo PDF: {e}")
-
-        # --- EJECUTAR IMPRESIÓN (Compatible con PyQt6) ---
-        try:
-            # Conectar la señal antes de llamar a printToPdf
-            self.view.page().pdfPrintingFinished.connect(lambda result: on_pdf_finished(save_path, result))
-            self.view.page().printToPdf(save_path)
-        except Exception as e:
-            print(f"[EXPORT-ERROR] Falló printToPdf: {e}")
-            self.btn_export_pdf.setEnabled(True)
-            QMessageBox.critical(self, "Error", f"Error crítico al iniciar exportación PDF:\n{e}")
-            
-# Asegura que el cálculo de vencimiento reciba company y lo use (como reflejan tus prints).
 def _compute_due_date_if_missing(invoice: Dict[str, Any], company: Dict[str, Any] | None = None) -> None:
     """
     Si no viene due_date o es igual a la fecha de emisión:
@@ -275,23 +320,15 @@ def _compute_due_date_if_missing(invoice: Dict[str, Any], company: Dict[str, Any
         except Exception as e:
             print(f"[INV-DUE] error sumando días: {e}")
 
+
 def _ensure_units(invoice: Dict[str, Any], logic_controller=None) -> None:
     """
     En cada ítem, asegura que 'unit' tenga valor.
-    
-    Resolución de unidad por prioridad:
-    1. Si el ítem ya tiene 'unit', lo usa
-    2. Busca por código exacto en la BD
-    3. Busca por nombre (get_items_like) con coincidencia parcial
-    4. Fallback a 'UND' si no se encuentra
-    
-    Si logic_controller está disponible, usa el servicio UnitResolver para
-    una resolución más robusta.
+    Si hay UnitResolver disponible, se usa; si no, fallback a 'UND'.
     """
     try:
         items = invoice.get("items") or []
-        
-        # Si tenemos logic_controller, usar el servicio UnitResolver
+
         if logic_controller:
             try:
                 from services import UnitResolver
@@ -300,8 +337,7 @@ def _ensure_units(invoice: Dict[str, Any], logic_controller=None) -> None:
                 return
             except Exception as e:
                 print(f"[ENSURE_UNITS] Could not use UnitResolver: {e}, falling back to simple method")
-        
-        # Fallback simple si no hay logic_controller o falla el resolver
+
         for it in items:
             if not (it.get("unit") or "").strip():
                 it["unit"] = "UND"
@@ -352,7 +388,6 @@ class InvoicePreviewDialog(QDialog):
 
         row = QHBoxLayout()
         self.btn_export_pdf = QPushButton("Exportar a PDF")
-        # Sustituimos "Imprimir (dialog)" por "Exportar a Excel"
         self.btn_export_excel = QPushButton("Exportar a Excel")
         self.btn_save_html = QPushButton("Guardar HTML")
         self.btn_close = QPushButton("Cerrar")
@@ -370,14 +405,9 @@ class InvoicePreviewDialog(QDialog):
 
     def _build_injectable_payloads(self):
         """
-        Construye (company, tpl, invoice) para inyectar en el HTML de vista previa.
-
-        Mejoras:
-        - Obtiene logic_controller desde el parent si existe y lo pasa a _prepare_company_data_for_preview
-        - Normaliza invoice (items/itbis) y asegura unidades
-        - Llama a _compute_due_date_if_missing(invoice, company) para aplicar el vencimiento fijo de la empresa
+        Construye (company, tpl, invoice) para inyectar en HTML.
+        Inyecta primary/secondary color desde company (Opción A).
         """
-        # Obtener logic_controller del parent si está disponible
         logic_ctrl = None
         try:
             if hasattr(self.parent(), 'logic'):
@@ -385,35 +415,30 @@ class InvoicePreviewDialog(QDialog):
         except Exception:
             logic_ctrl = None
 
-        # Preparar company con fallback y resolución de logo + signature_name
         company = _prepare_company_data_for_preview(self.raw_company, self.raw_template, logic_controller=logic_ctrl)
         tpl = dict(self.raw_template or {})
+        tpl["primary_color"] = company.get("primary_color") or tpl.get("primary_color", "#0087C3")
+        tpl["secondary_color"] = company.get("secondary_color") or tpl.get("secondary_color", "#F5F5F5")
         tpl["itbis_rate"] = tpl.get("itbis_rate", 0.18)
 
-        # Invoice payload: clonar y asegurar estructura mínima
         invoice = dict(self.raw_invoice or {})
         invoice["items"] = list(invoice.get("items", []))
 
-        # Debug traces
         print(f"[INV-PAYLOAD] Before compute_due: invoice.due='{invoice.get('due_date','')}', company.invoice_due_date='{company.get('invoice_due_date','')}', invoice.date='{invoice.get('date','')}'")
 
-        # Compute due date honoring company fixed due date first
         try:
             _compute_due_date_if_missing(invoice, company)
         except Exception as e:
             print(f"[INV-PAYLOAD] _compute_due_date_if_missing error: {e}")
 
-        # Ensure units and other item normalization
         try:
             _ensure_units(invoice, logic_controller=logic_ctrl)
         except Exception as e:
             print(f"[INV-PAYLOAD] _ensure_units error: {e}")
 
-        # Defensive defaults for apply_itbis
         if invoice.get("apply_itbis") is None:
             invoice["apply_itbis"] = True
 
-        # Compute totals defensively if not present
         try:
             subtotal = float(invoice.get("subtotal") or 0.0)
         except Exception:
@@ -436,7 +461,7 @@ class InvoicePreviewDialog(QDialog):
         print(f"[INV-PAYLOAD] Final invoice.due='{invoice.get('due_date','')}', subtotal={invoice['subtotal']}, itbis={invoice['itbis']}, total={invoice['total_amount']}")
 
         return company, tpl, invoice
-        
+
     def _load_html(self):
         try:
             if self.debug:
@@ -489,18 +514,18 @@ class InvoicePreviewDialog(QDialog):
             js_payload = json.dumps(payload, ensure_ascii=False).replace("</script>", "<\\/script>")
             assign_js = f"""
 (function(){{
-  try {{
-    var payload = {js_payload};
-    window.COMPANY = payload.COMPANY || {{}};
-    window.TEMPLATE = payload.TEMPLATE || {{}};
-    window.INVOICE = payload.INVOICE || {{}};
-    if (typeof renderAll === 'function') {{
-      try {{ renderAll(); }} catch (e) {{ console.warn('renderAll error', e); }}
-    }}
-    return true;
-  }} catch (e) {{
-    return false;
-  }}
+  try {{
+    var payload = {js_payload};
+    window.COMPANY = payload.COMPANY || {{}};
+    window.TEMPLATE = payload.TEMPLATE || {{}};
+    window.INVOICE = payload.INVOICE || {{}};
+    if (typeof renderAll === 'function') {{
+      try {{ renderAll(); }} catch (e) {{ console.warn('renderAll error', e); }}
+    }}
+    return true;
+  }} catch (e) {{
+    return false;
+  }}
 }})();
 """
             def after_assign(res):
@@ -512,100 +537,10 @@ class InvoicePreviewDialog(QDialog):
                 except Exception as e:
                     print("[InvoicePreviewDialog] runJavaScript error on show:", e)
 
-                # Fallback renderer extendido: incluye due date, unidad y nombre autorizado
-                try:
-                    fallback_js = r"""
-(function(){
-  try {
-    var comp = window.COMPANY || {};
-    var tpl = window.TEMPLATE || {};
-    var inv = window.INVOICE || {};
-
-    // Header empresa
-    if (document.getElementById('company-name'))
-      document.getElementById('company-name').textContent = (comp.name||'').toString().toUpperCase();
-
-    if (document.getElementById('company-meta')) {
-      var parts=[];
-      if(comp.rnc) parts.push('RNC: '+comp.rnc);
-      // Usa la dirección completa calculada en Python (comp.address) o las líneas individuales
-      if(comp.address) parts.push('Dirección: ' + comp.address); 
-      else if(comp.address_line1) parts.push(comp.address_line1);
-      
-      if(comp.phone) parts.push('Teléfono: '+comp.phone);
-      if(comp.email) parts.push('Email: '+comp.email);
-      document.getElementById('company-meta').innerHTML = parts.join('<br/>');
-    }
-
-    if (document.getElementById('company-logo') && (comp.logo_path || tpl.logo_path)) {
-      try {
-        var logoSrc = comp.logo_path || tpl.logo_path || '';
-        if(logoSrc){
-          var img=document.createElement('img');
-          img.src=logoSrc; img.style.maxWidth='100%'; img.style.maxHeight='100%';
-          var cont = document.getElementById('company-logo'); cont.innerHTML=''; cont.appendChild(img);
-        }
-      } catch(e){}
-    }
-
-    // Datos principales de documento
-    if (document.getElementById('invoice-type')) document.getElementById('invoice-type').textContent = inv.type || '';
-    if (document.getElementById('invoice-number-large')) document.getElementById('invoice-number-large').textContent = inv.display_number || inv.number || '';
-    if (document.getElementById('invoice-ncf')) document.getElementById('invoice-ncf').textContent = inv.ncf || '';
-    if (document.getElementById('invoice-date')) document.getElementById('invoice-date').textContent = inv.date || '';
-    
-    // Vencimiento (muestra la fecha, o N/A si es igual a la fecha de emisión o está vacía)
-    var dueDate = inv.due_date || '';
-    if (document.getElementById('invoice-due-date')) document.getElementById('invoice-due-date').textContent = dueDate || 'N/A'
-
-    // Cliente
-    if (document.getElementById('client-name')) document.getElementById('client-name').textContent = inv.client_name || '';
-    if (document.getElementById('client-rnc')) document.getElementById('client-rnc').textContent = inv.client_rnc || '';
-
-    // Nombre Autorizado (Firma)
-    if (document.getElementById('authorized-name')) document.getElementById('authorized-name').textContent = comp.authorized_name || comp.signature_name || '';
-
-
-    // Ítems
-    if (document.getElementById('items-table-body')) {
-      var tbody = document.getElementById('items-table-body'); var html=''; var subtotal=0;
-      (inv.items||[]).forEach(function(it){
-        var qty=Number(it.quantity)||0;
-        var up=Number(it.unit_price)||0;
-        var line=qty*up; subtotal+=line;
-        // La unidad ya fue asegurada a 'UNID' en Python, solo se muestra.
-        var unit = (it.unit && String(it.unit).trim()) ? it.unit : 'UNID'; 
-        
-        html+='<tr>';
-        html+='<td class="qty" style="text-align:center;">'+qty+'</td>';
-        html+='<td><div class="code">'+(it.code||'')+'</div><div class="desc">'+(it.description||'')+'</div></td>';
-        html+='<td class="unit" style="text-align:center;">'+unit+'</td>';
-        html+='<td class="right" style="text-align:right;">'+new Intl.NumberFormat('es-DO',{minimumFractionDigits:2}).format(up)+'</td>';
-        html+='<td class="right" style="text-align:right;">'+new Intl.NumberFormat('es-DO',{minimumFractionDigits:2}).format(line)+'</td>';
-        html+='</tr>';
-      });
-      tbody.innerHTML = html;
-
-      var itbis_rate = Number((tpl && tpl.itbis_rate) || 0.18);
-      var itbisAmt = subtotal * itbis_rate; var total = subtotal + itbisAmt;
-      if(document.getElementById('subtotal')) document.getElementById('subtotal').textContent = new Intl.NumberFormat('es-DO',{minimumFractionDigits:2}).format(subtotal);
-      if(document.getElementById('itbis')) document.getElementById('itbis').textContent = new Intl.NumberFormat('es-DO',{minimumFractionDigits:2}).format(itbisAmt);
-      if(document.getElementById('total')) document.getElementById('total').textContent = new Intl.NumberFormat('es-DO',{minimumFractionDigits:2}).format(total);
-    }
-  } catch(e) { console.error('fallback renderer error', e); }
-})();
-"""
-                    self.view.page().runJavaScript(fallback_js)
-                except Exception:
-                    pass
-
             self.view.page().runJavaScript(assign_js, after_assign)
 
         except Exception as e:
             print("[InvoicePreviewDialog] Error injecting payload:", e)
-
-# Patch: after upload completes in _on_export_pdf, show a small popup with "Abrir enlace" / "Copiar enlace"
-# Insert the helper function and call it once upload_url is available.
 
     def _show_uploaded_link_actions(self, upload_url: str):
         """
@@ -617,16 +552,12 @@ class InvoicePreviewDialog(QDialog):
         try:
             if not upload_url:
                 return
-            from PyQt6.QtWidgets import QMessageBox
-            import webbrowser
-            from PyQt6.QtGui import QGuiApplication
-
             msg = QMessageBox(self)
             msg.setWindowTitle("PDF subido")
             msg.setText("El PDF fue subido correctamente. ¿Qué deseas hacer?")
             open_btn = msg.addButton("Abrir enlace", QMessageBox.ButtonRole.AcceptRole)
             copy_btn = msg.addButton("Copiar enlace", QMessageBox.ButtonRole.ActionRole)
-            close_btn = msg.addButton("Cerrar", QMessageBox.ButtonRole.RejectRole)
+            msg.addButton("Cerrar", QMessageBox.ButtonRole.RejectRole)
             msg.exec()
 
             clicked = msg.clickedButton()
@@ -637,25 +568,13 @@ class InvoicePreviewDialog(QDialog):
                     QMessageBox.warning(self, "Abrir enlace", f"No se pudo abrir el enlace:\n{e}")
             elif clicked is copy_btn:
                 try:
+                    from PyQt6.QtGui import QGuiApplication
                     QGuiApplication.clipboard().setText(upload_url)
                     QMessageBox.information(self, "Copiar enlace", "Enlace copiado al portapapeles.")
                 except Exception as e:
                     QMessageBox.warning(self, "Copiar enlace", f"No se pudo copiar el enlace:\n{e}")
-            else:
-                # Close / do nothing
-                pass
         except Exception as e:
             print(f"[INV-UPLOAD] Error mostrando popup enlace: {e}")
-
-    # Call _show_uploaded_link_actions(upload_url) in the place where upload_url is obtained.
-    # In the existing _on_export_pdf we set upload_url and printed "[INV-UPLOAD] upload_url -> ...".
-    # Add a call like:
-    #    if upload_url:
-    #        try:
-    #            self._show_uploaded_link_actions(upload_url)
-    #        except Exception:
-    #            pass
-    # after printing upload_url.
 
     def _on_save_html(self):
         try:
@@ -685,84 +604,115 @@ class InvoicePreviewDialog(QDialog):
             QMessageBox.critical(self, "Guardar HTML", f"No se pudo generar/guardar el HTML:\n{e}")
 
     def _on_export_pdf(self):
-            """Genera PDF, lo sube (si aplica) y comunica la URL al parent."""
-            inv_number = self._last_payload.get('INVOICE', {}).get('display_number', 'draft')
-            fn, _ = QFileDialog.getSaveFileName(self, "Guardar PDF", f"factura_{inv_number}.pdf", "PDF Files (*.pdf)")
-            if not fn: return
-            
-            save_path = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
+        """
+        Genera PDF a disco usando el overload con callback de PyQt6,
+        luego sube a Storage y comunica la URL al parent.
+        """
+        inv_number = self._last_payload.get('INVOICE', {}).get('display_number', 'draft')
+        fn, _ = QFileDialog.getSaveFileName(self, "Guardar PDF", f"factura_{inv_number}.pdf", "PDF Files (*.pdf)")
+        if not fn:
+            return
+
+        save_path = fn if fn.lower().endswith(".pdf") else fn + ".pdf"
+        try:
             self.btn_export_pdf.setEnabled(False)
+        except Exception:
+            pass
 
-            def on_pdf_written(success):
+        def finish_and_upload(ok: bool):
+            try:
                 self.btn_export_pdf.setEnabled(True)
-                if not success:
-                    QMessageBox.warning(self, "Error", "No se pudo generar el PDF.")
-                    return
-                
-                QMessageBox.information(self, "PDF", f"PDF generado correctamente en:\n{save_path}")
-                
-                # --- SUBIDA A FIREBASE Y RETORNO DE METADATA ---
-                try:
-                    # Intentar subir
-                    logic = getattr(self.parent(), 'logic', None)
-                    upload_url = None
-                    
-                    # Construir ruta Storage: factura/EMPRESA/AÑO/MES/NUMERO.pdf
-                    comp = self._last_payload.get("COMPANY", {})
-                    inv = self._last_payload.get("INVOICE", {})
-                    safe_comp = "".join(c for c in (comp.get("name") or "empresa") if c.isalnum())
-                    year = (inv.get("date") or datetime.now().strftime("%Y-%m-%d"))[:4]
-                    storage_path = f"factura/{safe_comp}/{year}/{os.path.basename(save_path)}"
-                    
-                    if logic and hasattr(logic, 'upload_file_to_storage'):
-                        upload_url = logic.upload_file_to_storage(save_path, storage_path)
-                    
-                    if upload_url:
-                        print(f"[PREVIEW] PDF Subido: {upload_url}")
-                        
-                        # COMUNICAR AL PARENT (InvoiceTab)
-                        # Esto permite que cuando guardes la factura, se vincule este PDF
-                        if self.parent() and hasattr(self.parent(), '_preview_pdf_info'):
-                            self.parent()._preview_pdf_info = {
-                                "storage_path": storage_path,
-                                "url": upload_url,
-                                "company_id": comp.get("id"),
-                                "expires_at": (datetime.utcnow() + timedelta(days=7)).isoformat()
-                            }
-                        
-                        # Opcional: Mostrar popup de enlace
+            except Exception:
+                pass
+
+            if not ok:
+                QMessageBox.warning(self, "Error", "No se pudo generar el PDF.")
+                return
+
+            QMessageBox.information(self, "PDF", f"PDF generado correctamente en:\n{save_path}")
+
+            try:
+                logic = getattr(self.parent(), 'logic', None)
+                upload_url = None
+
+                comp = self._last_payload.get("COMPANY", {})
+                inv = self._last_payload.get("INVOICE", {})
+                safe_comp = "".join(c for c in (comp.get("name") or "empresa") if c.isalnum())
+                year = (inv.get("date") or datetime.now().strftime("%Y-%m-%d"))[:4]
+                storage_path = f"factura/{safe_comp}/{year}/{os.path.basename(save_path)}"
+
+                if logic and hasattr(logic, 'upload_file_to_storage'):
+                    upload_url = logic.upload_file_to_storage(save_path, storage_path)
+                elif hasattr(logic, 'data_access') and hasattr(logic.data_access, 'upload_file_to_storage'):
+                    upload_url = logic.data_access.upload_file_to_storage(save_path, storage_path)
+
+                if upload_url:
+                    print(f"[PREVIEW] PDF Subido: {upload_url}")
+                    if self.parent() and hasattr(self.parent(), '_preview_pdf_info'):
+                        self.parent()._preview_pdf_info = {
+                            "storage_path": storage_path,
+                            "url": upload_url,
+                            "company_id": comp.get("id"),
+                            "expires_at": (datetime.utcnow() + timedelta(days=7)).isoformat()
+                        }
+                    try:
                         self._show_uploaded_link_actions(upload_url)
-                        
-                except Exception as e:
-                    print(f"[PREVIEW] Error subiendo PDF: {e}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[PREVIEW] Error subiendo PDF: {e}")
 
-            # Lógica de impresión (simplificada para este ejemplo)
-            self.view.page().printToPdf(save_path, on_pdf_written)
+        def cb_bytes(data):
+            ok = False
+            try:
+                from PyQt6.QtCore import QByteArray as _QBA
+                if isinstance(data, (bytes, bytearray)):
+                    with open(save_path, "wb") as f:
+                        f.write(data)
+                    ok = True
+                elif isinstance(data, _QBA):
+                    with open(save_path, "wb") as f:
+                        f.write(bytes(data))
+                    ok = True
+                elif isinstance(data, bool):
+                    ok = data
+                else:
+                    if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+                        ok = True
+            except Exception as ex:
+                print(f"[EXPORT-ERROR] Procesando bytes de PDF: {ex}")
+                ok = False
+            finish_and_upload(ok)
 
+        try:
+            # Preferir overload con callback que entrega bytes
+            self.view.page().printToPdf(cb_bytes)
+        except TypeError:
+            # Fallback: overload filename + callback
+            try:
+                self.view.page().printToPdf(save_path, cb_bytes)
+            except Exception as e:
+                print(f"[EXPORT-ERROR] Falló printToPdf: {e}")
+                try:
+                    self.btn_export_pdf.setEnabled(True)
+                except Exception:
+                    pass
+                QMessageBox.critical(self, "Error", f"Error crítico al iniciar exportación PDF:\n{e}")
 
     def _on_export_excel(self):
         """
         Exporta la factura a Excel usando el generador del proyecto.
-        Orden de uso:
-        1) utils.quotation_templates.generate_invoice_excel(invoice_data, items, save_path, company_name, template=tpl_for_excel)
-        2) Fallback: utils.quotation_templates.generate_quotation_excel(data, items, save_path, company_name) con la misma info.
-
-        - Nombre sugerido: FACT_(display_number)_Empresa.xlsx
-        - Incluye code y unit en cada renglón
-        - Convierte file:/// del logo a ruta local y la inserta en el template para evitar errores en Windows
         """
-        import re, os, urllib.parse
+        import re, urllib.parse
 
-        # Payload que alimenta el HTML del preview (misma data para Excel)
         payload = getattr(self, "_last_payload", {}) or {}
         comp = (payload.get("COMPANY") or self.raw_company or {}) or {}
-        tpl  = (payload.get("TEMPLATE") or self.raw_template or {}) or {}
-        inv  = (payload.get("INVOICE")  or self.raw_invoice  or {}) or {}
+        tpl = (payload.get("TEMPLATE") or self.raw_template or {}) or {}
+        inv = (payload.get("INVOICE") or self.raw_invoice or {}) or {}
 
         company_name = (comp.get("name") or "EMPRESA").strip()
         display_number = (inv.get("display_number") or inv.get("number") or inv.get("ncf") or "FACT").strip()
 
-        # Nombre sugerido
         base = f"FACT_{display_number}_{company_name}"
         safe = re.sub(r"[^A-Za-z0-9._\\-]+", "_", base).strip("_")
         suggested = f"{safe}.xlsx"
@@ -772,7 +722,6 @@ class InvoicePreviewDialog(QDialog):
             return
         save_path = fn if fn.lower().endswith(".xlsx") else fn + ".xlsx"
 
-        # Generadores disponibles
         try:
             from utils.quotation_templates import generate_invoice_excel as gen_invoice_xlsx
         except Exception:
@@ -786,14 +735,12 @@ class InvoicePreviewDialog(QDialog):
             QMessageBox.warning(self, "Excel", "No se encontró ningún exportador Excel disponible.")
             return
 
-        # Helpers
         def _file_uri_to_path(uri_or_path: str) -> str:
             s = (uri_or_path or "").strip()
             if s.lower().startswith("file:///"):
                 return urllib.parse.unquote(s.replace("file:///", ""))
             return s
 
-        # Construir items (incluyendo code y unit)
         try:
             items_src = inv.get("items") or []
             items = []
@@ -831,16 +778,13 @@ class InvoicePreviewDialog(QDialog):
             itbis_val = subtotal * itbis_rate if apply_itbis else 0.0
             total_amount = subtotal + itbis_val
 
-            # Preparar template para Excel (inyecta logo como ruta local si viene en file:///)
             tpl_for_excel = dict(tpl or {})
             logo_local = _file_uri_to_path(comp.get("logo_path") or "")
             if logo_local:
-                # El generador de invoice toma el logo de template["logo_path"]
                 tpl_for_excel["logo_path"] = logo_local
                 if tpl_for_excel.get("show_logo") is False:
                     tpl_for_excel["show_logo"] = True
 
-            # Datos de factura que espera generate_invoice_excel
             invoice_data = {
                 "company_id": comp.get("id"),
                 "company_name": company_name,
@@ -855,15 +799,12 @@ class InvoicePreviewDialog(QDialog):
                 "currency": inv.get("currency") or "RD$",
                 "apply_itbis": bool(apply_itbis),
                 "itbis_rate": itbis_rate,
-                # El generador de PDF usa 'company_logo'; por compatibilidad no hace daño pasarla
                 "company_logo": logo_local,
             }
 
-            # Llamar al generador principal o al fallback
             if callable(gen_invoice_xlsx):
                 gen_invoice_xlsx(invoice_data, items, save_path, company_name, template=tpl_for_excel)
             else:
-                # Fallback al generador de cotización con datos equivalentes
                 data_fallback = {
                     "company_id": comp.get("id"),
                     "company_name": company_name,

@@ -10,7 +10,14 @@ from datetime import datetime
 import time
 from datetime import datetime, timedelta
 import facot_config  # se usará PDF_SIGNED_URL_DAYS si está definido
-
+import mimetypes
+import requests
+from google.cloud import storage as gcs_storage
+from google.oauth2 import service_account
+from google.cloud import storage as gcs_storage
+from google.oauth2 import service_account
+import mimetypes, os
+from typing import Optional
 
 # Asegúrate de que estos imports funcionen en tu proyecto
 try:
@@ -23,20 +30,188 @@ from firebase import get_firebase_client
 from utils.logger import get_audit_logger
 
 
-class FirebaseDataAccess(DataAccess):
-    """
-    Implementación de DataAccess usando Firebase Firestore.
-    """
+# Añade estos imports al inicio del archivo si no existen
+import os
+import mimetypes
+from typing import Optional
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
+# ... resto de imports existentes ...
+
+
+class FirebaseDataAccess:
+    # ===== Método __init__ corregido =====
     def __init__(self, user_id: Optional[str] = None):
+        # Cliente Firebase (Firestore y opcionalmente Storage SDK)
         self.client = get_firebase_client()
-        self.db = self.client.get_firestore()
-        self.storage = self.client.get_storage()
+
+        # Firestore
+        self.db = getattr(self.client, "get_firestore", lambda: None)()
+        if not self.db:
+            raise RuntimeError("Firestore no está disponible. Verificar configuración de Firebase.")
+
+        # Storage SDK (puede venir deshabilitado desde firebase_client.get_storage)
+        self.storage = getattr(self.client, "get_storage", lambda: None)()
+
+        # Usuario y auditoría
         self.user_id = user_id or "system"
         self.audit_logger = get_audit_logger()
 
-        if not self.db:
-            raise RuntimeError("Firestore no está disponible. Verificar configuración de Firebase.")
+        # Resolver bucket desde facot_config y normalizar a dominio moderno *.firebasestorage.app
+        try:
+            import facot_config
+            cred_path, raw_bucket = facot_config.get_firebase_config()
+        except Exception:
+            cred_path, raw_bucket = "", ""
+
+        def _to_new_bucket(b: str) -> str:
+            """
+            Normaliza bucket a dominio moderno *.firebasestorage.app:
+            - 'facot-app' -> 'facot-app.firebasestorage.app'
+            - '*.appspot.com' -> '*.firebasestorage.app'
+            - '*.firebasestorage.app' -> tal cual
+            """
+            b = (b or "").strip()
+            if not b:
+                return "facot-app.firebasestorage.app"
+            if b.endswith(".firebasestorage.app"):
+                return b
+            if b.endswith(".appspot.com"):
+                proj = b.replace(".appspot.com", "")
+                return f"{proj}.firebasestorage.app"
+            return f"{b}.firebasestorage.app"
+
+        self.storage_bucket = _to_new_bucket(raw_bucket)
+        # Host web y bucket son el mismo dominio en proyectos nuevos
+        self.storage_host = self.storage_bucket
+
+        # Generar token OAuth2 de la cuenta de servicio para subir vía REST con Authorization: Bearer
+        self.storage_auth_token = self._get_service_account_token(cred_path)
+
+        print(f"[STORAGE] Config -> host={self.storage_host} bucket={self.storage_bucket} sdk={'YES' if self.storage else 'NO'}")
+        print(f"[STORAGE] Auth token {'OK' if self.storage_auth_token else 'ABSENTE'}")
+
+    # ===== Método helper nuevo para obtener token =====
+    def _get_service_account_token(self, json_path: str) -> Optional[str]:
+        """
+        Obtiene un access token OAuth2 usando el archivo de credenciales del service account.
+        Scopes: devstorage.full_control para permitir escribir en Firebase Storage (GCS).
+        """
+        try:
+            if not json_path or not os.path.exists(json_path):
+                return None
+            scopes = ["https://www.googleapis.com/auth/devstorage.full_control"]
+            creds = service_account.Credentials.from_service_account_file(json_path, scopes=scopes)
+            creds.refresh(GoogleAuthRequest())
+            return getattr(creds, "token", None)
+        except Exception as e:
+            print(f"[AUTH] No se pudo obtener token de servicio: {e}")
+            return None
+
+    # ===== Método upload_file_to_storage corregido (REST con Bearer) =====
+    def upload_file_to_storage(self, local_path: str, storage_path: str) -> Optional[str]:
+        """
+        Sube un archivo a Storage del proyecto facot-app.
+
+        Estrategia:
+        1) Intentar Google Cloud Storage (GCS) con Service Account (recomendado, no depende de reglas de Firebase Storage).
+        - Requiere roles: storage.objectAdmin (o storage.admin) sobre el proyecto.
+        - Devuelve URL firmada (v4) de descarga por 7 días si es posible.
+        2) Fallback REST (API v0) con Authorization: Bearer (Service Account).
+        - Puede devolver 403 si las reglas Firebase requieren Firebase Auth en vez de SA OAuth2.
+        - Devuelve alt=media con token si las reglas generan downloadTokens.
+
+        Retorna:
+            URL de descarga (firmada o alt=media con token) si la subida fue exitosa; None si falla.
+        """
+        # Determinar content-type
+        try:
+            import mimetypes
+            ctype, _ = mimetypes.guess_type(local_path)
+            if not ctype:
+                _, ext = os.path.splitext(local_path)
+                ctype = "application/pdf" if ext.lower() == ".pdf" else "application/octet-stream"
+        except Exception:
+            ctype = "application/octet-stream"
+
+        # 1) Intentar subir con Google Cloud Storage SDK (no depende de reglas de Firebase Storage)
+        try:
+            from google.cloud import storage as gcs_storage
+            from google.oauth2 import service_account
+
+            # Obtener credenciales desde config
+            try:
+                import facot_config
+                cred_path, _ = facot_config.get_firebase_config()
+            except Exception:
+                cred_path = ""
+
+            if cred_path and os.path.exists(cred_path):
+                creds = service_account.Credentials.from_service_account_file(cred_path)
+                client = gcs_storage.Client(credentials=creds, project=creds.project_id)
+
+                # Nota: tu bucket confirmado es '*.firebasestorage.app'
+                bucket = client.bucket(self.storage_bucket)
+                blob = bucket.blob(storage_path)
+
+                blob.upload_from_filename(local_path, content_type=ctype)
+                print(f"[GCS-UPLOAD] OK -> gs://{self.storage_bucket}/{storage_path}")
+
+                # Intentar URL firmada v4 por 7 días
+                try:
+                    from datetime import timedelta
+                    signed_url = blob.generate_signed_url(version="v4", expiration=timedelta(days=7), method="GET")
+                    print(f"[GCS-UPLOAD] Signed URL (7d): {signed_url}")
+                    return signed_url
+                except Exception as e:
+                    print(f"[GCS-UPLOAD] No se pudo generar URL firmada: {e}")
+                    # Si no se puede firmar, continuamos con REST para intentar obtener alt=media con token
+            else:
+                print("[GCS-UPLOAD] Credenciales no encontradas para GCS upload. Intentando REST...")
+        except Exception as e:
+            print(f"[GCS-UPLOAD] Error subiendo archivo: {e}")
+            # Continuar al fallback REST
+
+        # 2) Fallback: API REST v0 con Bearer
+        try:
+            # Leer archivo binario
+            with open(local_path, "rb") as f:
+                data = f.read()
+
+            import requests
+            base_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o"
+            params = {
+                "name": storage_path
+            }
+            headers = {"Content-Type": ctype}
+            if getattr(self, "storage_auth_token", None):
+                headers["Authorization"] = f"Bearer {self.storage_auth_token}"
+
+            resp = requests.post(base_url, params=params, headers=headers, data=data, timeout=60)
+
+            if resp.status_code in (200, 201):
+                info = resp.json()
+                token = (info.get("downloadTokens") or "").split(",")[0] if info.get("downloadTokens") else ""
+                from urllib.parse import quote
+                encoded = quote(storage_path, safe="")
+                public_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o/{encoded}?alt=media"
+                if token:
+                    public_url += f"&token={token}"
+                print(f"[REST-UPLOAD] OK -> {public_url}")
+                return public_url
+            else:
+                try:
+                    print(f"[REST-UPLOAD] ERROR {resp.status_code}: {resp.text}")
+                except Exception:
+                    print(f"[REST-UPLOAD] ERROR {resp.status_code}")
+                # Si obtienes 403, lo más probable es que las reglas de Firebase requieran Firebase Auth (usuario)
+                # En ese caso, usa GCS (arriba) o ajusta reglas temporalmente para pruebas.
+                return None
+
+        except Exception as e:
+            print(f"[REST-UPLOAD] Excepción subiendo archivo: {e}")
+            return None
 
     def _add_metadata(self, data: Dict[str, Any], is_update: bool = False) -> Dict[str, Any]:
         """Agrega metadatos de auditoría a un documento."""
@@ -656,114 +831,94 @@ class FirebaseDataAccess(DataAccess):
     # ===== LOGOS EN STORAGE =====
 
     def upload_logo_to_storage(self, local_path: str, template_id: str) -> Optional[str]:
-        if not self.storage:
-            return None
+        """
+        Sube un logo de compañía/plantilla a Storage y devuelve URL pública.
+        - Usa SDK si está disponible (make_public; fallback signed URL v4 365 días para logos).
+        - Si no hay SDK, usa REST (googleapis) y devuelve URL con token.
+        storage_path: templates/<template_id>/logo.<ext>
+        """
         if not os.path.exists(local_path):
-            return None
-        try:
-            _, ext = os.path.splitext(local_path)
-            if not ext:
-                ext = ".png"
-            storage_path = f"templates/{template_id}/logo{ext}"
-            blob = self.storage.blob(storage_path)
-            content_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
-            content_type = content_types.get(ext.lower(), "application/octet-stream")
-            blob.upload_from_filename(local_path, content_type=content_type)
-            try:
-                blob.make_public()
-                public_url = blob.public_url
-            except Exception:
-                public_url = blob.generate_signed_url(version="v4", expiration=3600*24*365, method="GET")
-            print(f"[FIREBASE] Logo subido: {storage_path}")
-            return public_url
-        except Exception as e:
-            print(f"[FIREBASE] Error subiendo logo: {e}")
+            print(f"[UPLOAD-LOGO] Local file not found: {local_path}")
             return None
 
-    # ---------- NUEVAS FUNCIONES: UPLOAD FILES Y INDEXACIÓN ----------
+        # Resolver extensión y content-type de imagen
+        _, ext = os.path.splitext(local_path)
+        if not ext:
+            ext = ".png"
+        ext = ext.lower()
+        content_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
+        content_type = content_types.get(ext, "application/octet-stream")
+        storage_path = f"templates/{template_id}/logo{ext}"
 
-    def upload_file_to_storage(self, local_path: str, storage_path: str) -> Optional[str]:
-        """
-        Sube un archivo a Storage y devuelve una URL (publica o firmada).
-        - Intenta blob.make_public() (fallará si bucket usa uniform bucket-level access).
-        - Si falla, genera signed_url con expiración configurable (facot_config.PDF_SIGNED_URL_DAYS, default 7).
-        - Además, si genera signed_url guarda en files_index el campo 'expires_at' (ISO8601).
-        """
-        if not self.storage:
-            print("[PDF-UPLOAD] storage cliente no disponible")
-            return None
-        if not os.path.exists(local_path):
-            print(f"[PDF-UPLOAD] local file not found: {local_path}")
-            return None
-        try:
-            _, ext = os.path.splitext(local_path)
-            ext = ext.lower() or ".pdf"
-            blob = self.storage.blob(storage_path)
-            content_type = "application/pdf" if ext == ".pdf" else "application/octet-stream"
+        # SDK primero
+        if self.storage:
             try:
+                blob = self.storage.blob(storage_path)
                 try:
                     blob.upload_from_filename(local_path, content_type=content_type)
                 except TypeError:
                     blob.upload_from_filename(local_path)
-            except Exception as e_up:
-                print(f"[PDF-UPLOAD] ERROR uploading {local_path} -> {storage_path}: {e_up}")
-                raise
 
-            public_url = None
-            # Primero intentar make_public (puede fallar si uniform bucket-level access está habilitado)
-            try:
-                blob.make_public()
-                public_url = getattr(blob, "public_url", None)
-                if public_url:
-                    expires_at = None
-                    # indexar archivo
-                    try:
-                        self.set_file_index(storage_path, {
-                            "storage_path": storage_path,
-                            "url": public_url,
-                            "uploaded_at": datetime.utcnow().isoformat(),
-                            "expires_at": expires_at,
-                        })
-                    except Exception:
-                        pass
-                    print(f"[PDF-UPLOAD] make_public OK -> {public_url}")
+                # Intentar publicar
+                try:
+                    blob.make_public()
+                    public_url = getattr(blob, "public_url", None)
+                    print(f"[UPLOAD-LOGO] SDK make_public OK: {public_url}")
                     return public_url
-            except Exception as e_make:
-                print(f"[PDF-UPLOAD] make_public no disponible o falló: {e_make}")
+                except Exception as e_make:
+                    print(f"[UPLOAD-LOGO] SDK make_public failed: {e_make}")
 
-            # Fallback: generar signed URL con expiración configurable (máximo 7 días recomendado por GCS)
-            try:
-                days = int(getattr(facot_config, "PDF_SIGNED_URL_DAYS", 7) or 7)
-                # limitar a 7 días por las limitaciones GCS v4
-                if days > 7:
-                    days = 7
-                expiration_seconds = 3600 * 24 * days
-                public_url = blob.generate_signed_url(version="v4", expiration=expiration_seconds, method="GET")
-                expires_at = (datetime.utcnow() + timedelta(seconds=expiration_seconds)).isoformat()
-                # indexar archivo con expiración
+                # Fallback: signed URL con expiración larga para logos (1 año máx práctico)
                 try:
-                    self.set_file_index(storage_path, {
-                        "storage_path": storage_path,
-                        "url": public_url,
-                        "uploaded_at": datetime.utcnow().isoformat(),
-                        "expires_at": expires_at,
-                    })
-                except Exception:
-                    pass
-                print(f"[PDF-UPLOAD] Signed URL generado (expira en {days}d): {public_url}")
-                return public_url
-            except Exception as e_signed:
-                print(f"[PDF-UPLOAD] ERROR generating signed url: {e_signed}")
-                try:
-                    exists = blob.exists()
-                except Exception:
-                    exists = False
-                print(f"[PDF-UPLOAD] storage_path={storage_path} url=None (exists={exists})")
+                    expiration_seconds = 3600 * 24 * 365  # ~1 año
+                    public_url = blob.generate_signed_url(version="v4", expiration=expiration_seconds, method="GET")
+                    print(f"[UPLOAD-LOGO] SDK signed URL v4 (≈365d): {public_url}")
+                    return public_url
+                except Exception as e_signed:
+                    print(f"[UPLOAD-LOGO] SDK signed URL error: {e_signed}")
+
+            except Exception as e_sdk:
+                print(f"[UPLOAD-LOGO] SDK upload failed, will try REST: {e_sdk}")
+
+        # REST fallback
+        try:
+            base_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o"
+            params = {"name": storage_path}
+            headers = {"Content-Type": content_type}
+            if self.storage_auth_token:
+                headers["Authorization"] = f"Bearer {self.storage_auth_token}"
+
+            print(f"[REST-UPLOAD-LOGO] POST {base_url} name={storage_path} ctype={content_type}")
+            with open(local_path, "rb") as f:
+                data = f.read()
+
+            resp = requests.post(base_url, params=params, headers=headers, data=data, timeout=120)
+            if resp.status_code not in (200, 201):
+                print(f"[REST-UPLOAD-LOGO] ERROR {resp.status_code}: {resp.text}")
                 return None
 
+            j = resp.json() if resp.content else {}
+            download_tokens = j.get("downloadTokens")
+
+            from requests.utils import quote
+            name_encoded = quote(storage_path, safe="")
+            public_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o/{name_encoded}?alt=media"
+            if download_tokens:
+                public_url += f"&token={download_tokens}"
+
+            print(f"[REST-UPLOAD-LOGO] Uploaded: gs://{self.storage_bucket}/{storage_path}")
+            print(f"[REST-UPLOAD-LOGO] Public URL: {public_url}")
+            return public_url
+
         except Exception as e:
-            print(f"[PDF-UPLOAD] ERROR uploading {local_path} -> {storage_path}: {e}")
+            print(f"[REST-UPLOAD-LOGO] Exception uploading logo {local_path} -> {storage_path}: {e}")
             return None
+
+
+
+    # ---------- NUEVAS FUNCIONES: UPLOAD FILES Y INDEXACIÓN ----------
+
+
 
 
     def generate_signed_url_for_path(self, storage_path: str, days: int | None = None) -> Optional[str]:
@@ -812,23 +967,18 @@ class FirebaseDataAccess(DataAccess):
             print(f"[PDF-SIGN] ERROR: {e}")
             return None
         
-    def set_file_index(self, storage_path: str, metadata: Dict[str, Any]) -> None:
+    def set_file_index(self, storage_path: str, data: dict) -> None:
         """
-        Crea o actualiza un documento índice en collection 'files_index' para búsquedas rápidas.
-        El document id se deriva de storage_path sustituyendo '/' por '_'.
+        Indexa archivo en 'files_index' (opcional).
         """
         try:
-            if not storage_path:
-                return
             doc_id = storage_path.replace("/", "_")
-            index_ref = self.db.collection('files_index').document(doc_id)
-            payload = dict(metadata or {})
-            payload = self._add_metadata(payload, is_update=True)
-            payload['storage_path'] = storage_path
-            index_ref.set(payload, merge=True)
-            print(f"[FILES-INDEX] index set for {storage_path}")
+            self.db.collection("files_index").document(doc_id).set(data, merge=True)
         except Exception as e:
-            print(f"[FILES-INDEX] ERROR indexing {storage_path}: {e}")
+            print(f"[FILES-INDEX] Error indexando {storage_path}: {e}")
+
+
+
 
     def set_invoice_pdf_info(self, invoice_id: Any, storage_path: str, public_url: Optional[str], expires_at: Optional[str] = None) -> None:
         """
@@ -1307,3 +1457,85 @@ class FirebaseDataAccess(DataAccess):
         except Exception as e:
             print(f"[FIREBASE] Error get_company_due_date: {e}")
             return ""
+        
+
+
+    def _sdk_upload(self, local_path: str, storage_path: str) -> Optional[str]:
+        try:
+            import facot_config
+            cred_path, _ = facot_config.get_firebase_config()
+        except Exception:
+            cred_path = ""
+
+        if not cred_path or not os.path.exists(cred_path):
+            return None
+
+        creds = service_account.Credentials.from_service_account_file(cred_path)
+        client = gcs_storage.Client(credentials=creds, project=creds.project_id)
+        bucket = client.bucket(self.storage_bucket)  # ej: facot-app.firebasestorage.app
+        blob = bucket.blob(storage_path)
+
+        ctype, _ = mimetypes.guess_type(local_path)
+        if not ctype:
+            _, ext = os.path.splitext(local_path)
+            ctype = "application/pdf" if ext.lower() == ".pdf" else "application/octet-stream"
+
+        blob.upload_from_filename(local_path, content_type=ctype)
+
+        # Intentar URL firmada v4 (descarga)
+        try:
+            from datetime import timedelta
+            url = blob.generate_signed_url(version="v4", expiration=timedelta(days=7), method="GET")
+            return url
+        except Exception:
+            return None
+        
+
+
+    def _gcs_upload(self, local_path: str, storage_path: str) -> Optional[str]:
+        """
+        Sube un archivo usando Google Cloud Storage client (omite reglas de Firebase Storage).
+        Requiere que el Service Account tenga permisos de Storage en el proyecto facot-app.
+        """
+        try:
+            import facot_config
+            cred_path, _ = facot_config.get_firebase_config()
+        except Exception:
+            cred_path = ""
+
+        if not cred_path or not os.path.exists(cred_path):
+            print("[GCS] Credenciales no encontradas para GCS upload.")
+            return None
+
+        try:
+            # Construir cliente GCS con service account
+            creds = service_account.Credentials.from_service_account_file(cred_path)
+            client = gcs_storage.Client(credentials=creds, project=creds.project_id)
+
+            # Tu bucket es 'facot-app.firebasestorage.app' (confirmado)
+            bucket = client.bucket(self.storage_bucket)
+            blob = bucket.blob(storage_path)
+
+            # Content-Type
+            ctype, _ = mimetypes.guess_type(local_path)
+            if not ctype:
+                _, ext = os.path.splitext(local_path)
+                ctype = "application/pdf" if ext.lower() == ".pdf" else "application/octet-stream"
+
+            # Subida
+            blob.upload_from_filename(local_path, content_type=ctype)
+            print(f"[GCS-UPLOAD] OK -> gs://{self.storage_bucket}/{storage_path}")
+
+            # URL firmada opcional por 7 días para descarga
+            try:
+                from datetime import timedelta
+                url = blob.generate_signed_url(version="v4", expiration=timedelta(days=7), method="GET")
+                print(f"[GCS-UPLOAD] Signed URL (7d): {url}")
+                return url
+            except Exception as e:
+                print(f"[GCS-UPLOAD] No se pudo generar URL firmada: {e}")
+                return None
+
+        except Exception as e:
+            print(f"[GCS-UPLOAD] Error subiendo archivo: {e}")
+            return None

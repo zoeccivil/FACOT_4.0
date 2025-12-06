@@ -326,6 +326,102 @@ class LogicController:
             return self.data_access.close()
 
     # -------------------------
+    # Storage / File Upload (Firebase integration)
+    # -------------------------
+    def upload_file_to_storage(self, local_path: str, storage_path: str):
+        """
+        Sube un archivo al storage (Firebase) y devuelve la URL pública o signed URL.
+        
+        Args:
+            local_path: Ruta local del archivo
+            storage_path: Ruta destino en storage (ej: "logos/company_123.png" o "pdfs/invoice_456.pdf")
+        
+        Returns:
+            URL pública/signed del archivo subido, o None si falla o no está disponible
+        """
+        # Usar el método upload_file_to_storage de data_access si está disponible
+        if hasattr(self, 'data_access') and self.data_access:
+            if hasattr(self.data_access, 'upload_file_to_storage'):
+                try:
+                    url = self.data_access.upload_file_to_storage(local_path, storage_path)
+                    if url:
+                        print(f"[LOGIC-STORAGE] File uploaded via data_access to {storage_path}: {url}")
+                        return url
+                except Exception as e:
+                    print(f"[LOGIC-STORAGE] data_access.upload_file_to_storage failed: {e}")
+        
+        print(f"[LOGIC-STORAGE] upload_file_to_storage not available, file not uploaded: {local_path}")
+        return None
+    
+    def generate_signed_url_for_path(self, storage_path: str, days: int = 7):
+        """
+        Genera una signed URL temporal para un archivo en storage.
+        
+        Args:
+            storage_path: Ruta en storage (ej: "logos/company_123.png")
+            days: Días de validez de la URL (por defecto 7)
+        
+        Returns:
+            Signed URL temporal, o None si falla o no está disponible
+        """
+        # Usar el método generate_signed_url_for_path de data_access si está disponible
+        if hasattr(self, 'data_access') and self.data_access:
+            if hasattr(self.data_access, 'generate_signed_url_for_path'):
+                try:
+                    url = self.data_access.generate_signed_url_for_path(storage_path, days)
+                    if url:
+                        print(f"[LOGIC-STORAGE] Signed URL generated via data_access for {storage_path}")
+                        return url
+                except Exception as e:
+                    print(f"[LOGIC-STORAGE] data_access.generate_signed_url_for_path failed: {e}")
+        
+        print(f"[LOGIC-STORAGE] generate_signed_url_for_path not available for: {storage_path}")
+        return None
+    
+    def set_invoice_pdf_info(self, invoice_id: int, storage_path: str = None, url: str = None, expires_at: str = None):
+        """
+        Persiste la metadata del PDF asociado a una factura.
+        
+        Args:
+            invoice_id: ID de la factura
+            storage_path: Ruta en storage del PDF
+            url: URL del PDF (pública o signed)
+            expires_at: Fecha de expiración de la URL (ISO format)
+        """
+        if not self.data_access:
+            print(f"[LOGIC-STORAGE] No data_access available, cannot set PDF info for invoice {invoice_id}")
+            return
+        
+        # Usar el método set_invoice_pdf_info de data_access si está disponible
+        if hasattr(self.data_access, 'set_invoice_pdf_info'):
+            try:
+                self.data_access.set_invoice_pdf_info(invoice_id, storage_path, url, expires_at)
+                print(f"[LOGIC-STORAGE] PDF metadata saved via data_access for invoice {invoice_id}")
+                return
+            except Exception as e:
+                print(f"[LOGIC-STORAGE] data_access.set_invoice_pdf_info failed: {e}")
+        
+        # Fallback: intentar actualizar directamente en Firestore
+        try:
+            if hasattr(self.data_access, 'db'):
+                doc_ref = self.data_access.db.collection('invoices').document(str(invoice_id))
+                update_data = {}
+                if storage_path is not None:
+                    update_data['pdf_storage_path'] = storage_path
+                if url is not None:
+                    update_data['pdf_url'] = url
+                if expires_at is not None:
+                    update_data['pdf_expires_at'] = expires_at
+                
+                if update_data:
+                    doc_ref.update(update_data)
+                    print(f"[LOGIC-STORAGE] PDF metadata saved via fallback for invoice {invoice_id}")
+            else:
+                print(f"[LOGIC-STORAGE] Firestore not available, PDF metadata not saved")
+        except Exception as e:
+            print(f"[LOGIC-STORAGE] Error saving PDF metadata for invoice {invoice_id}: {e}")
+
+    # -------------------------
     # MÉTODO LEGACY (NO USADO EN MODO FIREBASE)
     # -------------------------
     def _initialize_db_sqlite(self):

@@ -1237,23 +1237,49 @@ class InvoiceTab(QWidget):
     # Empresa / plantillas / gestión
     # -------------------------
     def _on_edit_template(self):
+        """
+        Abre CompanyManagementWindow para editar empresa/branding.
+        Se retira TemplateEditorDialog (deprecated).
+        """
         company = None
         try: company = self.get_current_company()
         except Exception: pass
         if not company:
-            QMessageBox.warning(self, "Plantilla", "Seleccione primero una empresa válida.")
+            QMessageBox.warning(self, "Branding", "Seleccione primero una empresa válida.")
             return
+
         company_id = (company.get("id") or company.get("company_id") or company.get("pk"))
         if not company_id:
-            QMessageBox.warning(self, "Plantilla", "Empresa sin identificador."); return
-        if TemplateEditorDialog is None:
-            QMessageBox.critical(self, "Plantilla", "TemplateEditorDialog no disponible."); return
-        try:
-            dlg = TemplateEditorDialog(company_id=company_id, parent=self)
-            if dlg.exec():
-                QMessageBox.information(self, "Plantilla", "Plantilla guardada correctamente.")
-        except Exception as e:
-            QMessageBox.critical(self, "Plantilla", f"No se pudo abrir el editor:\n{e}")
+            QMessageBox.warning(self, "Branding", "Empresa sin identificador."); return
+
+        if CompanyManagementWindow:
+            try:
+                dlg = CompanyManagementWindow(parent=self, logic_controller=self.logic)
+                # Pre-seleccionar la empresa actual
+                try:
+                    dlg.selected_company_id = int(company_id)
+                    if hasattr(dlg, '_load_companies'):
+                        dlg._load_companies()
+                    for row in range(dlg.company_table.rowCount()):
+                        if dlg._companies_cache and row < len(dlg._companies_cache):
+                            if dlg._companies_cache[row].get('id') == int(company_id):
+                                dlg.company_table.selectRow(row)
+                                dlg._on_select(row, 0)
+                                break
+                except Exception as e:
+                    print(f"[ITAB] Error pre-selecting company in CompanyManagementWindow: {e}")
+
+                dlg.exec()
+                # Refresh after editing
+                self._notify_companies_changed()
+                try: self.on_company_change()
+                except Exception: self._update_ncf_sequence()
+                return
+            except Exception as e:
+                print(f"[ITAB] Error opening CompanyManagementWindow: {e}")
+                QMessageBox.critical(self, "Branding", f"No se pudo abrir gestión de empresas:\n{e}")
+        else:
+            QMessageBox.warning(self, "Branding", "CompanyManagementWindow no disponible.")
 
     def _open_company_manager(self):
         if CompanyManagementWindow is None:

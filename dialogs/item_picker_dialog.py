@@ -498,87 +498,107 @@ class ItemPickerDialog(QDialog):
         self._search_items()
 
     def _search_items(self):
-        text = (self.search_edit.text() or "").strip().lower()
-        sel_cid = self.category_filter.currentData()
+        text_raw = (self.search_edit.text() or "").strip()
+        text = text_raw.lower()
+        sel_cid = self.category_filter.currentData()  # Puede ser None
 
-        # Prefer backend if available
-        rows: List[Tuple[Any, ...]] = []
+        rows: List[Tuple[str, str, str, float, str]] = []  # (code, name, unit, price, category_name)
+        backend_items: List[Dict[str, Any]] = []
+        used_backend = False
+
+        # 1) Intentar backend
         try:
             if self.logic and hasattr(self.logic, "get_items_like"):
-                # Some backends accept (query, limit) signature
-                items = self.logic.get_items_like(text or "", limit=500) or []
-                for it in items:
-                    code = it.get("code") or it.get("codigo") or ""
-                    name = it.get("name") or it.get("nombre") or ""
-                    unit = it.get("unit") or it.get("unidad") or ""
-                    price = float(it.get("price") or it.get("precio") or 0.0)
-                    cat_name = ""
-                    # try resolve category name if backend provides categories or if item includes category_id
-                    cid = it.get("category_id")
-                    try:
-                        if cid and hasattr(self.logic, "get_company_details") is False:
-                            # skip
-                            pass
-                    except Exception:
-                        pass
-                    rows.append((code, name, unit, price, cat_name))
+                # get_items_like(query, limit) — algunos backends no filtran por categoría
+                backend_items = self.logic.get_items_like(text_raw or "", limit=500) or []
+                used_backend = True
             elif self.logic and hasattr(self.logic, "get_all_items"):
-                items = self.logic.get_all_items() or []
-                for it in items:
-                    code = it.get("code") or it.get("codigo") or ""
-                    name = it.get("name") or it.get("nombre") or ""
-                    unit = it.get("unit") or it.get("unidad") or ""
-                    price = float(it.get("price") or it.get("precio") or 0.0)
-                    rows.append((code, name, unit, price, ""))
-        except Exception:
-            rows = []
+                backend_items = self.logic.get_all_items() or []
+                used_backend = True
+        except Exception as e:
+            print(f"[ItemPicker] Backend error get_items: {e}")
+            backend_items = []
+            used_backend = False
 
-        # Fallback to sqlite if backend didn't provide rows
+        def _norm_item_dict(it: Dict[str, Any]) -> Dict[str, Any]:
+            # Normaliza campos del backend a un esquema común
+            return {
+                "code": (it.get("code") or it.get("codigo") or "").strip(),
+                "name": (it.get("name") or it.get("nombre") or "").strip(),
+                "unit": (it.get("unit") or it.get("unidad") or "").strip(),
+                "price": float(it.get("price") or it.get("precio") or 0.0),
+                "category_id": it.get("category_id") if "category_id" in it else it.get("categoria_id"),
+                "category_name": (it.get("category_name") or it.get("nombre_categoria") or "").strip(),
+            }
+
+        # 2) Si hubo backend, construir rows y aplicar filtros client-side si es necesario
+        if used_backend and backend_items:
+            normalized = [_norm_item_dict(it) for it in backend_items]
+
+            # Filtro por texto (code, name, category_name)
+            if text:
+                normalized = [
+                    it for it in normalized
+                    if (it["code"].lower().find(text) != -1)
+                    or (it["name"].lower().find(text) != -1)
+                    or (it["category_name"].lower().find(text) != -1)
+                ]
+
+            # Filtro por categoría si tenemos ID
+            if sel_cid is not None:
+                normalized = [
+                    it for it in normalized
+                    if (it["category_id"] == sel_cid)
+                ]
+
+            # Map a tu tabla
+            rows = [(it["code"], it["name"], it["unit"], it["price"], it["category_name"]) for it in normalized]
+
+        # 3) Si no hay rows del backend, usar SQLite con filtro server-side
         if not rows:
             db = get_db_path()
             if not db:
                 QMessageBox.warning(self, "Base de datos", "No hay base de datos seleccionada.")
                 return
-            with sqlite3.connect(db) as conn:
-                cur = conn.cursor()
-                base_q = """
-                    SELECT i.code, i.name, i.unit, IFNULL(i.price,0), IFNULL(c.name,'')
-                    FROM items i
-                    LEFT JOIN categories c ON c.id = i.category_id
-                    WHERE (LOWER(i.code) LIKE ? OR LOWER(i.name) LIKE ? OR LOWER(IFNULL(c.name,'')) LIKE ?)
-                """
-                params = [f"%{text}%", f"%{text}%", f"%{text}%"]
-                if sel_cid:
-                    base_q += " AND i.category_id = ?"
-                    params.append(sel_cid)
-                base_q += " ORDER BY i.name"
-                cur.execute(base_q, params)
-                rows = cur.fetchall()
-
-        # Apply category filter client-side if backend returned rows without category filter support
-        if sel_cid and rows:
             try:
-                filtered = []
-                for r in rows:
-                    # r[4] is category name in sqlite rows; for backend rows we may not have category id -> keep all
-                    # If backend provided category id it should be included in item dict path and handled above.
-                    filtered.append(r)
-                rows = filtered
-            except Exception:
-                pass
+                with sqlite3.connect(db) as conn:
+                    cur = conn.cursor()
+                    base_q = """
+                        SELECT i.code, IFNULL(i.name,''), IFNULL(i.unit,''), IFNULL(i.price,0), IFNULL(c.name,'')
+                        FROM items i
+                        LEFT JOIN categories c ON c.id = i.category_id
+                        WHERE 1=1
+                    """
+                    params: List[Any] = []
+                    if text:
+                        base_q += " AND (LOWER(i.code) LIKE ? OR LOWER(i.name) LIKE ? OR LOWER(IFNULL(c.name,'')) LIKE ?)"
+                        like = f"%{text}%"
+                        params.extend([like, like, like])
+                    if sel_cid is not None:
+                        base_q += " AND i.category_id = ?"
+                        params.append(sel_cid)
+                    base_q += " ORDER BY i.name LIMIT 500"
+                    cur.execute(base_q, params)
+                    rows = cur.fetchall()
+            except Exception as e:
+                QMessageBox.critical(self, "BD", f"Error consultando ítems:\n{e}")
+                return
 
-        # Populate the results table
+        # 4) Poblar la tabla de resultados
         self.results_table.setRowCount(0)
         for r, row in enumerate(rows):
             self.results_table.insertRow(r)
             for c, val in enumerate(row):
                 if c == 3:
+                    # precio formateado
                     try:
                         val = f"{float(val or 0.0):.2f}"
                     except Exception:
                         val = "0.00"
                 self.results_table.setItem(r, c, QTableWidgetItem(str(val)))
+
         self._apply_results_column_layout()
+
 
     def _on_result_double_clicked(self, item: QTableWidgetItem):
         if not item:
