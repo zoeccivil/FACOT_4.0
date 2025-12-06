@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
@@ -86,7 +86,7 @@ class QuotationHistoryTab(QWidget):
         self.month_combo = QComboBox()
         self.month_combo.addItem("Todos", None)
         months = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         for i, month in enumerate(months, 1):
             self.month_combo.addItem(month, i)
         self.month_combo.currentIndexChanged.connect(self._apply_filters)
@@ -112,6 +112,21 @@ class QuotationHistoryTab(QWidget):
         filter_bar.addStretch()
         layout.addLayout(filter_bar)
         
+        # --- TOOLBAR (History actions: Abrir PDF / Regenerar enlace) ---
+        tool_row = QHBoxLayout()
+        self.btn_open_pdf = QPushButton("Abrir PDF")
+        self.btn_open_pdf.setToolTip("Abrir PDF de la cotización seleccionada (usa pdf_url guardado en Firestore)")
+        self.btn_open_pdf.clicked.connect(self._open_selected_pdf)
+        tool_row.addWidget(self.btn_open_pdf)
+
+        self.btn_regen_pdf_link = QPushButton("Regenerar enlace")
+        self.btn_regen_pdf_link.setToolTip("Generar nuevo signed URL para el PDF de la cotización seleccionada")
+        self.btn_regen_pdf_link.clicked.connect(self._regenerate_selected_pdf_link)
+        tool_row.addWidget(self.btn_regen_pdf_link)
+
+        tool_row.addStretch(1)
+        layout.addLayout(tool_row)
+        
         # === TABLE ===
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["ID", "Fecha", "Cliente", "RNC", "Moneda", "Total", "Notas", "Acciones"])
@@ -121,10 +136,9 @@ class QuotationHistoryTab(QWidget):
         self.table.setSortingEnabled(True)
         
         # Column resize strategy - fill entire width without gaps
-        # Set specific columns to Interactive (user can resize)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # ID
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Fecha
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)      # Cliente - takes available space
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)      # Cliente
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)  # RNC
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)  # Moneda
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)  # Total
@@ -139,7 +153,7 @@ class QuotationHistoryTab(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(False)
         
-        # === CONTEXT MENU ===
+        # Context menu for table rows
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         
@@ -148,39 +162,171 @@ class QuotationHistoryTab(QWidget):
         # Refresh button
         btn_refresh = QPushButton("Refrescar Historial")
         btn_refresh.clicked.connect(self.refresh)
-        layout.addWidget(btn_refresh)
-    
+        layout.addWidget(btn_refresh)    
+
+
+    def _get_selected_quotation_id(self) -> Optional[str]:
+        """Retorna el ID (texto) de la fila seleccionada en la tabla o None."""
+        try:
+            r = self.table.currentRow()
+            if r < 0:
+                return None
+            item = self.table.item(r, 0)
+            if not item:
+                return None
+            return item.text()
+        except Exception:
+            return None
+
+
     def _show_context_menu(self, position):
-        """Show context menu on right-click."""
+        """Show context menu on right-click for a quotation row, adding open/regenerate actions."""
         from PyQt6.QtWidgets import QMenu
         from PyQt6.QtGui import QAction
-        
-        # Get the selected row
+
         index = self.table.indexAt(position)
         if not index.isValid():
             return
-        
+
         row = index.row()
         quotation_id_item = self.table.item(row, 0)
         if not quotation_id_item:
             return
-        
+
         quotation_id = quotation_id_item.text()
-        
-        # Create context menu
+        # try to find the record dict if needed
+        record = None
+        try:
+            for q in self.all_quotations:
+                if str(q.get('id')) == str(quotation_id):
+                    record = q
+                    break
+        except Exception:
+            record = None
+
         menu = QMenu(self)
-        
+
+        preview_action = QAction("👁 Vista Previa", self)
+        preview_action.triggered.connect(lambda: self._open_quotation_preview(record) if record else None)
+        menu.addAction(preview_action)
+
         edit_action = QAction("✏️ Editar", self)
         edit_action.triggered.connect(lambda: self._edit_quotation(quotation_id))
         menu.addAction(edit_action)
-        
+
+        menu.addSeparator()
+
+        pdf_action = QAction("📄 Exportar PDF", self)
+        pdf_action.triggered.connect(lambda: self._export_quotation_pdf(record) if record else None)
+        menu.addAction(pdf_action)
+
+        excel_action = QAction("📊 Exportar Excel", self)
+        excel_action.triggered.connect(lambda: self._export_quotation_excel(record) if record else None)
+        menu.addAction(excel_action)
+
+        menu.addSeparator()
+
+        open_pdf_action = QAction("Abrir PDF", self)
+        open_pdf_action.triggered.connect(lambda: self._open_selected_pdf())
+        menu.addAction(open_pdf_action)
+
+        regen_action = QAction("Regenerar enlace", self)
+        regen_action.triggered.connect(lambda: self._regenerate_selected_pdf_link())
+        menu.addAction(regen_action)
+
+        menu.addSeparator()
+
         delete_action = QAction("🗑️ Eliminar", self)
         delete_action.triggered.connect(lambda: self._delete_quotation(quotation_id))
         menu.addAction(delete_action)
-        
-        # Show menu at cursor position
+
         menu.exec(self.table.viewport().mapToGlobal(position))
     
+
+    def _open_selected_pdf(self):
+        """Open the signed/public URL for the selected quotation in the user's browser."""
+        import webbrowser
+        quotation_id = self._get_selected_quotation_id()
+        if not quotation_id:
+            QMessageBox.information(self, "Abrir PDF", "Seleccione una cotización primero.")
+            return
+        try:
+            q = None
+            if hasattr(self.logic, 'get_quotation_by_id'):
+                q = self.logic.get_quotation_by_id(quotation_id) or {}
+            else:
+                QMessageBox.information(self, "Abrir PDF", "El backend no soporta obtener cotización por ID.")
+                return
+            pdf_url = (q or {}).get('pdf_url') or None
+            if not pdf_url:
+                QMessageBox.information(self, "Abrir PDF", "No se encontró URL del PDF para esta cotización.")
+                return
+            webbrowser.open(pdf_url)
+        except Exception as e:
+            QMessageBox.warning(self, "Abrir PDF", f"No se pudo abrir el enlace:\n{e}")
+
+    def _regenerate_selected_pdf_link(self):
+        """
+        Generate a new signed URL for the selected quotation's storage path and persist it.
+        This uses logic.generate_signed_url_for_path(...) or falls back to data_access helper.
+        """
+        from datetime import datetime, timedelta
+        try:
+            quotation_id = self._get_selected_quotation_id()
+            if not quotation_id:
+                QMessageBox.information(self, "Regenerar enlace", "Seleccione una cotización primero.")
+                return
+
+            q = None
+            if hasattr(self.logic, 'get_quotation_by_id'):
+                q = self.logic.get_quotation_by_id(quotation_id) or {}
+            else:
+                QMessageBox.information(self, "Regenerar enlace", "El backend no soporta obtener cotización por ID.")
+                return
+
+            storage_path = q.get('pdf_storage_path') or None
+            if not storage_path:
+                QMessageBox.information(self, "Regenerar enlace", "No se encontró storage_path para esta cotización.")
+                return
+
+            # determine days (configurable)
+            days = 7
+            try:
+                import facot_config
+                days = int(getattr(facot_config, "PDF_SIGNED_URL_DAYS", 7) or 7)
+            except Exception:
+                days = 7
+
+            url = None
+            if hasattr(self.logic, "generate_signed_url_for_path"):
+                url = self.logic.generate_signed_url_for_path(storage_path, days=days)
+            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "generate_signed_url_for_path"):
+                url = self.logic.data_access.generate_signed_url_for_path(storage_path, days=days)
+            else:
+                QMessageBox.warning(self, "Regenerar enlace", "El backend no soporta generar signed URLs bajo demanda.")
+                return
+
+            if not url:
+                QMessageBox.warning(self, "Regenerar enlace", "No se pudo generar un nuevo enlace firmado.")
+                return
+
+            expires_at = (datetime.utcnow() + timedelta(days=min(days, 7))).isoformat()
+
+            # persist in backend
+            if hasattr(self.logic, "set_quotation_pdf_info"):
+                self.logic.set_quotation_pdf_info(quotation_id, storage_path, url, expires_at=expires_at)
+            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "set_quotation_pdf_info"):
+                self.logic.data_access.set_quotation_pdf_info(quotation_id, storage_path, url, expires_at=expires_at)
+
+            QMessageBox.information(self, "Regenerar enlace", f"Nuevo enlace generado y guardado.\nExpira: {expires_at}")
+            try:
+                self.refresh()
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.critical(self, "Regenerar enlace", f"No se pudo generar el enlace:\n{e}")
+
+
     def _edit_quotation(self, quotation_id):
         """Edit a quotation by loading it in the quotation tab."""
         try:
