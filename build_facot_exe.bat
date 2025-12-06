@@ -137,9 +137,15 @@ if exist facot_config.json (
 
 REM PyQt6 WebEngine runtime resources
 REM Get PyQt6 installation directory
-for /f "delims=" %%I in ('python -c "import PyQt6, os; print(os.path.dirname(PyQt6.__file__))"') do set PYQT6_DIR=%%I
+set PYQT6_DIR=
+for /f "delims=" %%I in ('python -c "import PyQt6, os; print(os.path.dirname(PyQt6.__file__))" 2^>nul') do set PYQT6_DIR=%%I
 
-echo [INFO] PyQt6 directory: %PYQT6_DIR%
+if "%PYQT6_DIR%"=="" (
+    echo [WARN] Could not detect PyQt6 directory. WebEngine resources may not be included.
+    echo [WARN] Ensure PyQt6 is installed: pip install PyQt6 PyQt6-WebEngine
+) else (
+    echo [INFO] PyQt6 directory: %PYQT6_DIR%
+)
 
 REM Add QtWebEngineProcess.exe
 if exist "%PYQT6_DIR%\Qt6\bin\QtWebEngineProcess.exe" (

@@ -145,8 +145,11 @@ def _apply_safe_menu_styles(app: QApplication, theme_id: str = "light") -> None:
 
     # Get existing stylesheet and append menu styles
     existing = app.styleSheet() or ""
-    # Only append if menu styles not already present
-    if "QMenuBar" not in existing:
+    # Use regex to check if QMenuBar styles already exist (more robust than simple string search)
+    import re
+    has_menubar_styles = bool(re.search(r'QMenuBar\s*\{', existing))
+    
+    if not has_menubar_styles:
         app.setStyleSheet(existing + "\n" + menu_stylesheet)
 
 def main():
@@ -162,7 +165,8 @@ def main():
         tm = get_theme_manager()
         tm.set_app(app)
         saved_id = tm.load_saved_theme()
-        theme_to_apply = saved_id or "light"
+        # Use saved theme if it exists and is not None or empty string
+        theme_to_apply = saved_id if (saved_id is not None and saved_id) else "light"
         tm.apply_theme(app, theme_to_apply)
         print(f"[THEME] Tema aplicado al inicio: {theme_to_apply}")
     except Exception as e:

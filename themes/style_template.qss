@@ -116,6 +116,8 @@ QPushButton#actionButton:hover {
 }
 
 /* --- TABLES --- */
+/* Note: QTableView is included alongside QTableWidget for compatibility,
+   as some parts of the app may use QTableView directly or through inheritance */
 QTableWidget, QTableView {
     background-color: {{surface}};
     alternate-background-color: {{surface_alt}};

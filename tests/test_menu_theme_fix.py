@@ -159,15 +159,13 @@ class TestTableStyling:
         # Generate light theme stylesheet
         qss = generate_stylesheet("light")
         
-        # Extract table-related styles
-        import re
-        table_section = re.search(r'QTableWidget.*?(?=\n\n|QTabWidget|$)', qss, re.DOTALL)
+        # Check that table widgets have light colors defined
+        # Look for specific light color codes that should be present
+        assert "#FFFFFF" in qss or "#F8FAFC" in qss, "Light theme should contain white or light colors"
         
-        if table_section:
-            table_styles = table_section.group()
-            # Should not have pure black (#000000) as background
-            # Light theme should use white or light colors
-            assert "#000000" not in table_styles or "QTableWidget::item:selected" in table_styles
+        # Ensure pure black is not used as a primary background color for tables
+        # (it might appear in borders or other contexts, but not as background-color: #000000)
+        assert "background-color: #000000" not in qss.lower(), "Light theme should not have pure black backgrounds"
 
 
 class TestThemeIntegration:
