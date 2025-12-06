@@ -339,29 +339,16 @@ class LogicController:
         Returns:
             URL pública/signed del archivo subido, o None si falla o no está disponible
         """
-        # Intentar usar data_access (Firebase) si está disponible
-        if hasattr(self, 'data_access') and self.data_access and hasattr(self.data_access, 'storage'):
-            try:
-                storage = self.data_access.storage
-                if storage:
-                    import os
-                    blob = storage.blob(storage_path)
-                    blob.upload_from_filename(local_path)
-                    # Intentar hacer público
-                    try:
-                        blob.make_public()
-                        url = blob.public_url
-                    except Exception:
-                        # Si no se puede hacer público, generar signed URL
-                        url = blob.generate_signed_url(
-                            version="v4",
-                            expiration=3600 * 24 * 365,  # 1 año
-                            method="GET"
-                        )
-                    print(f"[LOGIC-STORAGE] File uploaded to {storage_path}: {url}")
-                    return url
-            except Exception as e:
-                print(f"[LOGIC-STORAGE] Firebase upload failed: {e}")
+        # Usar el método upload_file_to_storage de data_access si está disponible
+        if hasattr(self, 'data_access') and self.data_access:
+            if hasattr(self.data_access, 'upload_file_to_storage'):
+                try:
+                    url = self.data_access.upload_file_to_storage(local_path, storage_path)
+                    if url:
+                        print(f"[LOGIC-STORAGE] File uploaded via data_access to {storage_path}: {url}")
+                        return url
+                except Exception as e:
+                    print(f"[LOGIC-STORAGE] data_access.upload_file_to_storage failed: {e}")
         
         print(f"[LOGIC-STORAGE] upload_file_to_storage not available, file not uploaded: {local_path}")
         return None
@@ -377,24 +364,16 @@ class LogicController:
         Returns:
             Signed URL temporal, o None si falla o no está disponible
         """
-        # Intentar usar data_access (Firebase)
-        if hasattr(self, 'data_access') and self.data_access and hasattr(self.data_access, 'storage'):
-            try:
-                storage = self.data_access.storage
-                if storage:
-                    blob = storage.blob(storage_path)
-                    if blob.exists():
-                        url = blob.generate_signed_url(
-                            version="v4",
-                            expiration=3600 * 24 * days,
-                            method="GET"
-                        )
-                        print(f"[LOGIC-STORAGE] Generated signed URL for {storage_path} (valid {days} days)")
+        # Usar el método generate_signed_url_for_path de data_access si está disponible
+        if hasattr(self, 'data_access') and self.data_access:
+            if hasattr(self.data_access, 'generate_signed_url_for_path'):
+                try:
+                    url = self.data_access.generate_signed_url_for_path(storage_path, days)
+                    if url:
+                        print(f"[LOGIC-STORAGE] Signed URL generated via data_access for {storage_path}")
                         return url
-                    else:
-                        print(f"[LOGIC-STORAGE] File not found in storage: {storage_path}")
-            except Exception as e:
-                print(f"[LOGIC-STORAGE] Firebase signed URL generation failed: {e}")
+                except Exception as e:
+                    print(f"[LOGIC-STORAGE] data_access.generate_signed_url_for_path failed: {e}")
         
         print(f"[LOGIC-STORAGE] generate_signed_url_for_path not available for: {storage_path}")
         return None
@@ -412,9 +391,18 @@ class LogicController:
         if not self.data_access:
             print(f"[LOGIC-STORAGE] No data_access available, cannot set PDF info for invoice {invoice_id}")
             return
-            
+        
+        # Usar el método set_invoice_pdf_info de data_access si está disponible
+        if hasattr(self.data_access, 'set_invoice_pdf_info'):
+            try:
+                self.data_access.set_invoice_pdf_info(invoice_id, storage_path, url, expires_at)
+                print(f"[LOGIC-STORAGE] PDF metadata saved via data_access for invoice {invoice_id}")
+                return
+            except Exception as e:
+                print(f"[LOGIC-STORAGE] data_access.set_invoice_pdf_info failed: {e}")
+        
+        # Fallback: intentar actualizar directamente en Firestore
         try:
-            # Intentar actualizar en Firestore si está disponible
             if hasattr(self.data_access, 'db'):
                 doc_ref = self.data_access.db.collection('invoices').document(str(invoice_id))
                 update_data = {}
@@ -427,7 +415,7 @@ class LogicController:
                 
                 if update_data:
                     doc_ref.update(update_data)
-                    print(f"[LOGIC-STORAGE] PDF metadata saved for invoice {invoice_id}")
+                    print(f"[LOGIC-STORAGE] PDF metadata saved via fallback for invoice {invoice_id}")
             else:
                 print(f"[LOGIC-STORAGE] Firestore not available, PDF metadata not saved")
         except Exception as e:
