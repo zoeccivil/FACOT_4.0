@@ -42,28 +42,65 @@ class CategoryDialog(QDialog):
             self._load(category)
 
     def _build_ui(self):
-        self.setMinimumWidth(420)
-        lay = QVBoxLayout(self)
-        form = QFormLayout()
-        self.name_edit = QLineEdit()
-        self.prefix_edit = QLineEdit()
-        self.seq_spin = QSpinBox(); self.seq_spin.setMinimum(1); self.seq_spin.setMaximum(999999)
-        self.desc_edit = QTextEdit(); self.desc_edit.setPlaceholderText("Descripción (opcional)")
-        form.addRow("Nombre:", self.name_edit)
-        form.addRow("Prefijo de código:", self.prefix_edit)
-        form.addRow("Siguiente secuencia:", self.seq_spin)
-        form.addRow("Descripción:", self.desc_edit)
-        lay.addLayout(form)
+        root = QVBoxLayout(self)
 
-        self.name_edit.textChanged.connect(self._on_name_change)
-        # El prefijo solo es editable si es nueva categoría (opcional, aquí lo dejamos editable siempre)
-        # self.prefix_edit.textEdited.connect(lambda _: None) 
+        # Barra de categorías
+        cat_bar = QHBoxLayout()
+        cat_bar.addWidget(QLabel("Categoría:"))
 
-        btns = QHBoxLayout()
-        ok = QPushButton("Guardar"); ok.clicked.connect(self.accept)
-        cancel = QPushButton("Cancelar"); cancel.clicked.connect(self.reject)
-        btns.addWidget(ok); btns.addWidget(cancel)
-        lay.addLayout(btns)
+        self.cat_combo = QComboBox()
+        self.cat_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.cat_combo.currentIndexChanged.connect(self._on_category_changed)
+        cat_bar.addWidget(self.cat_combo, stretch=6)
+
+        self.btn_new_cat = QPushButton("Nueva")
+        self.btn_edit_cat = QPushButton("Editar")
+        self.btn_del_cat = QPushButton("Eliminar")
+        self.btn_new_cat.clicked.connect(self._new_category)
+        self.btn_edit_cat.clicked.connect(self._edit_category)
+        self.btn_del_cat.clicked.connect(self._delete_category)
+        cat_bar.addWidget(self.btn_new_cat)
+        cat_bar.addWidget(self.btn_edit_cat)
+        cat_bar.addWidget(self.btn_del_cat)
+        root.addLayout(cat_bar)
+
+        # Acciones de ítem
+        actions = QHBoxLayout()
+        self.btn_new_item = QPushButton("Nuevo Ítem")
+        self.btn_edit_item = QPushButton("Editar Ítem")
+        self.btn_del_item = QPushButton("Eliminar Ítem")
+        self.btn_new_item.clicked.connect(self._new_item)
+        self.btn_edit_item.clicked.connect(self._edit_item)
+        self.btn_del_item.clicked.connect(self._delete_item)
+
+        actions.addWidget(self.btn_new_item)
+        actions.addWidget(self.btn_edit_item)
+        actions.addWidget(self.btn_del_item)
+        root.addLayout(actions)
+
+        # Búsqueda
+        search_bar = QHBoxLayout()
+        search_bar.addWidget(QLabel("Buscar:"))
+        self.search_edit = QLineEdit(); self.search_edit.setPlaceholderText("Código, nombre o categoría…")
+        # Conectar de forma robusta: la señal textChanged emite el texto; aceptamos el parámetro en el filtro
+        self.search_edit.textChanged.connect(self._filter_items_table) # _filter_items_table acepta arg opcional
+        search_bar.addWidget(self.search_edit)
+        root.addLayout(search_bar)
+
+        # Tabla
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["#", "Código", "Nombre", "UD", "Costo", "Precio Venta", "Categoría", "Descripción"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Mostrar descripción (antes la ocultabas); si quieres ocultarla pon True
+        self.table.setColumnHidden(7, False)
+        self.table.itemDoubleClicked.connect(lambda *_: self._edit_item())
+        
+        root.addWidget(self.table)
 
     def _on_name_change(self, text: str):
         # Sugerir prefijo solo si es nuevo y el campo está vacío
@@ -405,47 +442,58 @@ class ItemsManagementWindow(QDialog):
             print(f"[DEBUG-ITEMS] Error cargando ítems: {e}")
             traceback.print_exc()
 
-    def _filter_items_table(self):
-        """Filtra y repinta la tabla basándose en el cache local."""
-        search = self.search_edit.text().lower().strip()
-        cat_filter_id = self.cat_combo.currentData() # None si es "Todas"
-        
-        self.table.setRowCount(0)
-        
-        filtered = []
-        for it in self._items_cache:
-            # Filtro por categoría - COMPARACIÓN ROBUSTA (Str vs Str)
-            if cat_filter_id is not None:
-                # Convertimos ambos a string para asegurar coincidencia "1" == 1
-                if str(it.get('category_id', '')) != str(cat_filter_id):
-                    continue
+    def _filter_items_table(self, _=None):
+        """Filtra y repinta la tabla basándose en el cache local.
+        Acepta un parámetro opcional porque textChanged emite el texto.
+        """
+        try:
+            search = (self.search_edit.text() or "").lower().strip()
+            cat_filter_id = self.cat_combo.currentData()  # None si es "Todas"
             
-            # Filtro por texto
-            if search:
-                txt = f"{it['code']} {it['name']} {it['category_name']}".lower()
-                if search not in txt:
-                    continue
+            self.table.setRowCount(0)
             
-            filtered.append(it)
-        
-           
-        # Pintar
-        for idx, it in enumerate(filtered, 1):
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+            filtered = []
+            for it in self._items_cache:
+                # Filtro por categoría - COMPARACIÓN ROBUSTA (Str vs Str)
+                if cat_filter_id is not None:
+                    # Convertimos ambos a string para asegurar coincidencia "1" == 1
+                    if str(it.get('category_id', '')) != str(cat_filter_id):
+                        continue
+                
+                # Filtro por texto
+                if search:
+                    txt = f"{it.get('code','')} {it.get('name','')} {it.get('category_name','')}".lower()
+                    if search not in txt:
+                        continue
+                
+                filtered.append(it)
             
-            # Guardamos el ID real en el item 0
-            item_id_widget = QTableWidgetItem(str(idx))
-            item_id_widget.setData(Qt.ItemDataRole.UserRole, it['id']) # ID real
-            
-            self.table.setItem(row, 0, item_id_widget)
-            self.table.setItem(row, 1, QTableWidgetItem(it['code']))
-            self.table.setItem(row, 2, QTableWidgetItem(it['name']))
-            self.table.setItem(row, 3, QTableWidgetItem(it['unit']))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{it['cost']:,.2f}"))
-            self.table.setItem(row, 5, QTableWidgetItem(f"{it['price']:,.2f}"))
-            self.table.setItem(row, 6, QTableWidgetItem(it['category_name']))
-            self.table.setItem(row, 7, QTableWidgetItem(it['description']))
+            # Pintar
+            for idx, it in enumerate(filtered, 1):
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                
+                # Guardamos el ID real en el item 0
+                item_id_widget = QTableWidgetItem(str(idx))
+                item_id_widget.setData(Qt.ItemDataRole.UserRole, it['id']) # ID real
+                
+                self.table.setItem(row, 0, item_id_widget)
+                self.table.setItem(row, 1, QTableWidgetItem(it.get('code','') or ""))
+                self.table.setItem(row, 2, QTableWidgetItem(it.get('name','') or ""))
+                self.table.setItem(row, 3, QTableWidgetItem(it.get('unit','') or "UND"))
+                try:
+                    self.table.setItem(row, 4, QTableWidgetItem(f"{float(it.get('cost',0)):,.2f}"))
+                except Exception:
+                    self.table.setItem(row, 4, QTableWidgetItem("0.00"))
+                try:
+                    self.table.setItem(row, 5, QTableWidgetItem(f"{float(it.get('price',0)):,.2f}"))
+                except Exception:
+                    self.table.setItem(row, 5, QTableWidgetItem("0.00"))
+                self.table.setItem(row, 6, QTableWidgetItem(it.get('category_name','') or ""))
+                self.table.setItem(row, 7, QTableWidgetItem(it.get('description','') or ""))
+        except Exception as e:
+            print(f"[DEBUG-ITEMS] Error en _filter_items_table: {e}")
+            traceback.print_exc()
 
     def _on_category_changed(self, idx):
         self._filter_items_table()

@@ -1,9 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
 import os
-import datetime
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit, QPushButton,
     QDateEdit, QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox, QComboBox,
@@ -24,6 +22,9 @@ from constants import DEFAULT_CURRENCY, ITBIS_RATE
 from utils.asset_paths import resolve_logo_uri
 from dialogs.invoice_preview_dialog import InvoicePreviewDialog
 from utils.app_paths import resource_path
+import webbrowser
+import facot_config
+
 DEFAULT_UNIT_FALLBACK = "UND"
 
 
@@ -66,6 +67,10 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         super().__init__(parent)
         self.logic = logic
         self.get_current_company = get_current_company_callable
+
+        # Temp store for preview-uploaded pdf metadata (before creating the quotation)
+        # Estructura: {'storage_path': str, 'url': str, 'company_id': int, 'quotation_number': str}
+        self._preview_pdf_info_quotation: Optional[Dict[str, Any]] = None
 
         try:
             print(f"[LOAD] QuotationTab module: {__file__}")
@@ -203,10 +208,16 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         btn_preview_html = QPushButton("Vista Previa / PDF")
         btn_preview_html.setToolTip("Abrir vista previa HTML y exportar a PDF (WYSIWYG)")
         btn_preview_html.clicked.connect(self._preview_quotation)
+        btn_save_pdf = QPushButton("Guardar PDF")
+        btn_save_pdf.setToolTip("Exportar y guardar PDF en disco y en Firebase")
+        btn_save_pdf.clicked.connect(self._generate_quotation_pdf)
         btn_save_quotation = QPushButton("Guardar en Base de Datos")
         btn_save_quotation.clicked.connect(self._save_quotation)
         footer_row.addWidget(btn_preview_html)
+        footer_row.addWidget(btn_save_pdf)
         footer_row.addWidget(btn_save_quotation)
+        
+
         layout.addLayout(footer_row)
 
         self.quotation_date.dateChanged.connect(lambda _d: self._refresh_due_date_label())
@@ -224,9 +235,42 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         dlg = ItemPickerDialog(self, title="Agregar ítems a la Cotización")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        items = dlg.get_selected_items()
+        items = dlg.get_selected_items() or []
+        print(f"[QTAB] ItemPicker returned {len(items)} items")
         for it in items:
-            self._append_row(it.get("codigo"), it.get("nombre"), it.get("unidad"), it.get("cantidad"), it.get("precio"), it.get("subtotal"))
+            # Mapeo robusto de campos (soporte español/inglés y variantes)
+            code = (it.get("codigo") or it.get("code") or it.get("item_code") or it.get("codigo_producto") or "").strip()
+            name = (it.get("nombre") or it.get("name") or it.get("description") or it.get("descripcion") or "").strip()
+            unit = (it.get("unidad") or it.get("unit") or it.get("unidad_medida") or "").strip() or DEFAULT_UNIT_FALLBACK
+            # Cantidad puede venir como 'cantidad', 'qty', 'quantity'
+            qty = it.get("cantidad") if it.get("cantidad") is not None else (it.get("quantity") if it.get("quantity") is not None else (it.get("qty") if it.get("qty") is not None else 0))
+            # Precio puede venir como 'precio', 'unit_price', 'price'
+            price = it.get("precio") if it.get("precio") is not None else (it.get("unit_price") if it.get("unit_price") is not None else (it.get("price") if it.get("price") is not None else 0))
+            # Subtotal si viene, si no calcular
+            subtotal = it.get("subtotal") if it.get("subtotal") is not None else (it.get("line_total") if it.get("line_total") is not None else None)
+            try:
+                # convertir textos numéricos si aplica
+                qty = float(qty)
+            except Exception:
+                try:
+                    qty = float(str(qty).replace(",", "").strip() or 0)
+                except Exception:
+                    qty = 0.0
+            try:
+                price = float(price)
+            except Exception:
+                try:
+                    price = float(str(price).replace(",", "").strip() or 0)
+                except Exception:
+                    price = 0.0
+            if subtotal is None:
+                try:
+                    subtotal = float(qty) * float(price)
+                except Exception:
+                    subtotal = 0.0
+
+            print(f"[QTAB] appending item -> code:{code!r}, name:{name!r}, unit:{unit!r}, qty:{qty}, price:{price}, subtotal:{subtotal}")
+            self._append_row(code, name, unit, qty, price, subtotal)
         self._recalculate_totals()
 
     def _append_row(self, code, name, unit, qty, price, subtotal=None):
@@ -347,7 +391,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             print(f"[QTAB-DUE] _refresh_due_date_label error: {e}")
 
     def _preview_quotation(self):
-        import os, datetime
+        import os
         from utils.app_paths import get_resource_path as resource_path
         from dialogs.quotation_preview_dialog import QuotationPreviewDialog as DocumentPreviewDialog
         from dialogs.invoice_preview_dialog import InvoicePreviewDialog
@@ -367,7 +411,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         try:
             quotation_date_str = self.quotation_date.date().toString("yyyy-MM-dd")
         except Exception:
-            quotation_date_str = datetime.date.today().strftime("%Y-%m-%d")
+            quotation_date_str = datetime.now().strftime("%Y-%m-%d")
 
         due_auto = self._compute_quotation_due_date(quotation_date_str)
 
@@ -426,69 +470,194 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         except Exception as e:
             QMessageBox.critical(self, "Vista Previa", f"No se pudo abrir la vista previa:\n{e}")
 
-    def _save_quotation(self):
+    def _generate_quotation_pdf(self):
         company = self.get_current_company()
         if not company:
-            QMessageBox.warning(self, "Empresa", "Seleccione una empresa válida"); return
+            QMessageBox.warning(self, "Empresa", "Seleccione una empresa válida")
+            return
 
-        subtotal = 0.0
-        items = []
-        for r in range(self.quotation_items_table.rowCount()):
-            sub = self.quotation_items_table.item(r, 6)
-            try:
-                subtotal += float(sub.text().replace(",", "")) if sub and sub.text().strip() else 0.0
-            except Exception:
-                pass
-        itbis = subtotal * ITBIS_RATE if getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked() else 0.0
-        total = subtotal + itbis
+        items = self._collect_items_for_export()
+        if not items:
+            QMessageBox.warning(self, "Ítems", "Agrega al menos un ítem a la cotización antes de generar PDF.")
+            return
 
         data = {
-            "company_id": company['id'],
+            "company_id": company.get("id"),
             "quotation_date": self.quotation_date.date().toString("yyyy-MM-dd"),
             "client_name": self.quotation_client_name.text(),
             "client_rnc": self.quotation_client_rnc.text(),
-            "notes": self.quotation_notes.toPlainText() if getattr(self, "notes_box", None) and self.notes_box.isVisible() else "",
-            "currency": self.quotation_currency.text(),
-            "apply_itbis": bool(getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked()),
-            "subtotal": round(subtotal, 2),
-            "itbis": round(itbis, 2),
-            "total_amount": round(total, 2),
-            "excel_path": "",
-            "pdf_path": "",
+            "items": items,
+            "total_amount": 0
         }
 
-        for r in range(self.quotation_items_table.rowCount()):
-            desc = self.quotation_items_table.item(r, 2)
-            qty = self.quotation_items_table.item(r, 4)
-            price = self.quotation_items_table.item(r, 5)
-            code = self.quotation_items_table.item(r, 1)
-            unit = self.quotation_items_table.item(r, 3)
-            try:
-                qty_val = float(qty.text().replace(",", "")) if qty and qty.text().strip() else 0.0
-                price_val = float(price.text().replace(",", "")) if price and price.text().strip() else 0.0
-            except Exception:
-                qty_val = 0.0; price_val = 0.0
-            items.append({
-                "code": code.text() if code else "",
-                "description": desc.text() if desc else "",
-                "unit": unit.text() if unit else DEFAULT_UNIT_FALLBACK,
-                "quantity": qty_val,
-                "unit_price": price_val,
-                "line_total": round(qty_val * price_val, 2)
-            })
-
-        quotation_id = None
-        try:
-            quotation_id = self.logic.add_quotation(data, items)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo guardar la cotización:\n{e}")
+        fn, _ = QFileDialog.getSaveFileName(self, "Guardar Cotización como PDF", "", "PDF Files (*.pdf)")
+        if not fn:
             return
+        save_path = fn if fn.endswith(".pdf") else fn + ".pdf"
 
-        QMessageBox.information(self, "Cotización", f"Cotización creada (ID: {quotation_id})")
-        self._clear_form()
-        if quotation_id:
-            self.quotation_saved.emit(quotation_id)
+        # Generar PDF (HTML path o fallback)
+        try:
+            export_quotation_pdf_with_template(data, items, save_path, company_name=company.get("name",""))
+        except Exception:
+            try:
+                from utils.quotation_templates import generate_quotation_pdf
+                generate_quotation_pdf(data, items, save_path, company_name=company.get("name",""))
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"No se pudo generar el PDF:\n{e}")
+                return
 
+        # Subir a Firebase Storage si está disponible
+        try:
+            company_name = (company.get('name') or '').strip()
+            safe_company = ''.join(c for c in company_name if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_') or f"company_{company.get('id')}"
+            # try to use quotation number, if empty use timestamp
+            quot_number = (getattr(self, "quotation_number", "") or "").strip() or f"DRAFT-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            year = self.quotation_date.date().toString("yyyy")
+            month = self.quotation_date.date().toString("MM")
+            storage_path = f"cotizacion/{safe_company}/{year}/{month}/{quot_number}.pdf"
+
+            upload_url = None
+            if hasattr(self.logic, "upload_file_to_storage"):
+                upload_url = self.logic.upload_file_to_storage(save_path, storage_path)
+            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "upload_file_to_storage"):
+                upload_url = self.logic.data_access.upload_file_to_storage(save_path, storage_path)
+
+            if upload_url:
+                print(f"[PDF-UPLOAD] tipo=cotizacion storage_path={storage_path} url={upload_url}")
+                # Guardar temporalmente para asociar luego cuando se cree la cotización real
+                self._preview_pdf_info_quotation = {
+                    "storage_path": storage_path,
+                    "url": upload_url,
+                    "company_id": company.get("id"),
+                    "quotation_number": quot_number
+                }
+            else:
+                print(f"[PDF-UPLOAD] Upload returned no url for {storage_path}")
+        except Exception as e:
+            print(f"[PDF-UPLOAD] ERROR during upload quotation: {e}")
+
+    def _save_quotation(self):
+        """
+        Guardar/crear cotización. Busca preview PDF info en self._preview_pdf_info_quotation
+        (establecido por _generate_quotation_pdf) y la adjunta al documento y/o la persiste tras crear la cotización.
+        """
+        try:
+            company = self.get_current_company()
+            if not company:
+                QMessageBox.warning(self, "Empresa", "Seleccione una empresa válida")
+                return
+
+            subtotal = 0.0
+            items = []
+            for r in range(self.quotation_items_table.rowCount()):
+                desc = self.quotation_items_table.item(r, 2)
+                qty = self.quotation_items_table.item(r, 4)
+                price = self.quotation_items_table.item(r, 5)
+                code = self.quotation_items_table.item(r, 1)
+                unit = self.quotation_items_table.item(r, 3)
+                try:
+                    qty_val = float(qty.text().replace(",", "")) if qty and qty.text().strip() else 0.0
+                    price_val = float(price.text().replace(",", "")) if price and price.text().strip() else 0.0
+                except Exception:
+                    qty_val = 0.0; price_val = 0.0
+                items.append({
+                    "code": code.text() if code else "",
+                    "description": desc.text() if desc else "",
+                    "unit": unit.text() if unit else "UND",
+                    "quantity": qty_val,
+                    "unit_price": price_val,
+                    "line_total": round(qty_val * price_val, 2)
+                })
+                subtotal += (qty_val * price_val)
+
+            itbis = subtotal * (getattr(self, "itbis_rate", 0.18) or 0.18) if getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked() else 0.0
+            total = subtotal + itbis
+
+            data = {
+                "company_id": company.get("id"),
+                "quotation_date": self.quotation_date.date().toString("yyyy-MM-dd"),
+                "client_name": self.quotation_client_name.text(),
+                "client_rnc": self.quotation_client_rnc.text(),
+                "notes": self.quotation_notes.toPlainText() if getattr(self, "notes_box", None) and self.notes_box.isVisible() else "",
+                "currency": self.quotation_currency.text(),
+                "apply_itbis": bool(getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked()),
+                "subtotal": round(subtotal, 2),
+                "itbis": round(itbis, 2),
+                "total_amount": round(total, 2),
+            }
+
+            # Adjuntar preview PDF info si existe
+            try:
+                preview_info = getattr(self, "_preview_pdf_info_quotation", None)
+                if preview_info and isinstance(preview_info, dict):
+                    sp = preview_info.get("storage_path")
+                    url = preview_info.get("url")
+                    if sp:
+                        data["pdf_storage_path"] = sp
+                    if url:
+                        data["pdf_url"] = url
+                    print(f"[QT-SAVE] Asociando preview PDF al payload: storage_path={sp} url={url}")
+            except Exception as e:
+                print(f"[QT-SAVE] Error leyendo preview preview_info: {e}")
+
+            # Guardar o actualizar
+            quotation_id = None
+            try:
+                if hasattr(self.logic, "add_quotation"):
+                    quotation_id = self.logic.add_quotation(data, items)
+                elif hasattr(self.logic, "create_quotation"):
+                    quotation_id = self.logic.create_quotation(data, items)
+                else:
+                    da = getattr(self.logic, "data_access", None) or self.logic
+                    if hasattr(da, "add_quotation"):
+                        quotation_id = da.add_quotation(data, items)
+                    else:
+                        raise RuntimeError("No se encontró método para crear cotización.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"No se pudo guardar la cotización:\n{e}")
+                print(f"[QT-SAVE] Error guardando cotización: {e}")
+                return
+
+            # Si hay preview_info persistir metadata explícitamente
+            try:
+                preview_info = getattr(self, "_preview_pdf_info_quotation", None)
+                if preview_info and isinstance(preview_info, dict) and quotation_id:
+                    sp = preview_info.get("storage_path")
+                    url = preview_info.get("url")
+                    expires_at = preview_info.get("expires_at", "")
+                    da = getattr(self.logic, "data_access", None) or self.logic
+                    try:
+                        if hasattr(self.logic, "set_quotation_pdf_info"):
+                            try:
+                                self.logic.set_quotation_pdf_info(quotation_id, sp, url, expires_at=expires_at)
+                            except TypeError:
+                                self.logic.set_quotation_pdf_info(quotation_id, sp, url)
+                        elif da and hasattr(da, "set_quotation_pdf_info"):
+                            try:
+                                da.set_quotation_pdf_info(quotation_id, sp, url, expires_at=expires_at)
+                            except TypeError:
+                                da.set_quotation_pdf_info(quotation_id, sp, url)
+                        print(f"[QT-SAVE] Persistida metadata PDF en quotation {quotation_id}: {sp} / {url}")
+                    except Exception as ex_set:
+                        print(f"[QT-SAVE] Error persistiendo pdf info en quotation {quotation_id}: {ex_set}")
+                    try:
+                        self._preview_pdf_info_quotation = None
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[QT-SAVE] Error post-save persist pdf: {e}")
+
+            QMessageBox.information(self, "Cotización", f"Cotización creada (ID: {quotation_id})")
+            self._clear_form()
+            if quotation_id:
+                try:
+                    self.quotation_saved.emit(quotation_id)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"[QT-SAVE] Error inesperado en _save_quotation: {e}")
+            QMessageBox.critical(self, "Error", f"No se pudo guardar la cotización:\n{e}")
     def _clear_form(self):
         try:
             self.quotation_date.setDate(QDate.currentDate())
@@ -508,22 +677,14 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             pass
     
     def load_quotation_by_id(self, quotation_id: int):
-        """
-        Load an existing quotation into the form for editing.
-        
-        Args:
-            quotation_id: ID of the quotation to load
-        """
         try:
             import logging
             logger = logging.getLogger(__name__)
             
-            # Get quotation data
             quotation = None
             if hasattr(self.logic, 'get_quotation_by_id'):
                 quotation = self.logic.get_quotation_by_id(quotation_id)
             else:
-                # Fallback: search in get_quotations
                 company = self.get_current_company()
                 if company and hasattr(self.logic, 'get_quotations'):
                     quotations = self.logic.get_quotations(company['id'])
@@ -536,11 +697,8 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 QMessageBox.warning(self, "Error", f"No se encontró la cotización con ID: {quotation_id}")
                 return
             
-            # Clear form first
             self._clear_form()
             
-            # Load header data
-            # Date
             date_str = quotation.get('quotation_date', '')
             if date_str:
                 try:
@@ -550,15 +708,12 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 except Exception:
                     pass
             
-            # Client data
             self.quotation_client_name.setText(quotation.get('client_name', ''))
             self.quotation_client_rnc.setText(quotation.get('client_rnc', ''))
             
-            # Currency
             currency = quotation.get('currency', 'RD$')
             self.quotation_currency.setText(currency)
             
-            # Notes
             notes = quotation.get('notes', '')
             if notes:
                 self.quotation_notes.setText(notes)
@@ -566,12 +721,10 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 self.notes_toggle.setChecked(True)
                 self.notes_toggle.setArrowType(Qt.ArrowType.DownArrow)
             
-            # Load items
             items = []
             if hasattr(self.logic, 'get_quotation_items'):
                 items = self.logic.get_quotation_items(quotation_id)
             
-            # Populate items table
             self.quotation_items_table.setRowCount(0)
             for item in items:
                 code = item.get('item_code', item.get('code', ''))
@@ -582,7 +735,6 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 subtotal = qty * price
                 self._append_row(code, name, unit, qty, price, subtotal)
             
-            # Recalculate totals
             self._recalculate_totals()
             
             QMessageBox.information(self, "Cargar Cotización", f"Cotización ID: {quotation_id} cargada para edición")
@@ -594,6 +746,11 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             QMessageBox.critical(self, "Error", f"No se pudo cargar la cotización:\n{str(e)}")
 
     def _get_company_payload_for_preview(self):
+        """
+        Normaliza y retorna (company_payload, tpl) para pasar a QuotationPreviewDialog.
+        Mejora: intenta incluir signature_name/authorized_name desde get_company_details
+        buscando múltiples claves si el campo no aparece en la estructura mínima.
+        """
         company_min = self.get_current_company() or {}
         company_id = company_min.get("id")
 
@@ -612,6 +769,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             print(f"[QuotationTab] ERROR en get_company_details: {e}")
             details_db = {}
 
+        # Merge: priorizar company_min (short) y complementar con details_db
         details = {**company_min, **details_db}
 
         a1 = (details.get("address_line1") or "").strip()
@@ -622,7 +780,14 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         else:
             address_full = addr or "Dirección no especificada"
 
-        signature = (details.get("signature_name") or "").strip()
+        # Resolver firma/autorizado robustamente desde posibles claves en details_db
+        signature = ""
+        for k in ("signature_name", "authorized_name", "firma", "signature", "authorized_signer", "authorized"):
+            v = details.get(k)
+            if v and isinstance(v, str) and v.strip():
+                signature = v.strip()
+                break
+
         logo_rel = (details.get("logo_path") or "").strip()
 
         payload = {
@@ -637,6 +802,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             "signature_name": signature,
             "authorized_name": signature,
             "logo_path": logo_rel,
+            "invoice_due_date": details.get("invoice_due_date", "") or ""
         }
 
         tpl = {}
@@ -646,7 +812,6 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             tpl = {}
 
         print(f"[QuotationTab] company_payload_for_preview FINAL: {payload}")
-
         return payload, tpl
 
     def _collect_items_for_export(self):

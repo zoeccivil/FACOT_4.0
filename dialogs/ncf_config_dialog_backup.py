@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import List, Dict, Any, Tuple, Set, Optional
-
-from datetime import datetime, timedelta
-import webbrowser
+from typing import List, Dict, Any, Tuple, Set
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
@@ -118,21 +115,6 @@ class InvoiceHistoryTab(QWidget):
         btn_clear_filters.clicked.connect(self._clear_filters)
         filter_layout.addWidget(btn_clear_filters)
         layout.addWidget(self.filter_widget)
-
-        # --- TOOLBAR (history actions: Abrir PDF / Regenerar enlace) ---
-        tool_row = QHBoxLayout()
-        self.btn_open_pdf = QPushButton("Abrir PDF")
-        self.btn_open_pdf.setToolTip("Abrir PDF de la factura seleccionada (usa pdf_url guardado en Firestore)")
-        self.btn_open_pdf.clicked.connect(self._open_selected_pdf)
-        tool_row.addWidget(self.btn_open_pdf)
-
-        self.btn_regen_pdf_link = QPushButton("Regenerar enlace")
-        self.btn_regen_pdf_link.setToolTip("Generar nuevo signed URL para el PDF de la factura seleccionada")
-        self.btn_regen_pdf_link.clicked.connect(self._regenerate_selected_pdf_link)
-        tool_row.addWidget(self.btn_regen_pdf_link)
-
-        tool_row.addStretch(1)
-        layout.addLayout(tool_row)
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["ID", "Fecha", "NCF", "Cliente", "RNC", "Moneda", "Total", "Acciones"])
@@ -530,69 +512,92 @@ class InvoiceHistoryTab(QWidget):
 
         QMessageBox.information(self, "Editar", "No se pudo abrir la factura en modo edición automáticamente.\nCompruebe que exista un editor integrado (invoice_tab).")
 
-    def _delete_invoice(self, inv_id_or_record):
-        """
-        Borra una factura. inv_id_or_record puede ser:
-        - un id (int o str)
-        - un dict con key 'id' o 'invoice_id' o 'documentId'
-        """
-        # Extraer id del argumento
-        inv_id = None
+    def _delete_invoice(self, record: Dict[str, Any]):
+        iid = record.get('id')
+        if not iid:
+            QMessageBox.warning(self, "Eliminar", "ID de factura no disponible.")
+            return
+        reply = QMessageBox.question(self, "Confirmar Eliminación", f"¿Eliminar la factura {iid}? Esta acción no se puede deshacer.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        tried = []
+        success = False
         try:
-            if isinstance(inv_id_or_record, dict):
-                inv_id = inv_id_or_record.get("id") or inv_id_or_record.get("invoice_id") or inv_id_or_record.get("doc_id") or inv_id_or_record.get("documentId")
-            else:
-                inv_id = inv_id_or_record
-            # Normalizar a string/entero según convenga
-            if inv_id is None:
-                QMessageBox.warning(self, "Eliminar", f"No se encontró ID de la factura a eliminar: {repr(inv_id_or_record)}")
-                return
-            # Mostrar confirmación con el ID legible
-            reply = QMessageBox.question(self, "Eliminar",
-                                        f"¿Estás seguro de borrar la factura {inv_id} permanentemente?",
-                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            # Intentar convertir a entero si es posible (backends que usan ints)
-            inv_id_to_use = inv_id
+            iid_int = None
             try:
-                inv_id_to_use = int(inv_id)
+                iid_int = int(iid)
             except Exception:
-                # dejar tal cual (string)
-                inv_id_to_use = inv_id
+                iid_int = iid
 
-            res = False
-            if hasattr(self.logic, "delete_factura"):
+            for fn_name in ("delete_invoice", "remove_invoice", "delete_invoice_by_id", "deleteInvoice", "delete_factura", "remove_factura"):
+                fn = getattr(self.logic, fn_name, None)
+                if callable(fn):
+                    try:
+                        res = fn(iid_int)
+                        if isinstance(res, tuple):
+                            success = bool(res[0])
+                        else:
+                            success = bool(res)
+                        tried.append(f"{fn_name}: OK" if success else f"{fn_name}: returned False")
+                        if success:
+                            break
+                    except Exception as e:
+                        tried.append(f"{fn_name}: {e}")
+
+            if not success and hasattr(self.logic, "execute_sql"):
                 try:
-                    res = self.logic.delete_factura(inv_id_to_use)
+                    for table in ("invoices", "facturas", "invoice", "factura"):
+                        try:
+                            self.logic.execute_sql(f"DELETE FROM {table} WHERE id=?", (iid_int,))
+                            tried.append(f"execute_sql on {table}: OK")
+                            success = True
+                            break
+                        except Exception as e:
+                            tried.append(f"execute_sql on {table}: {e}")
                 except Exception as e:
-                    print(f"[INV-DELETE] logic.delete_factura raised: {e}")
-                    try:
-                        # Fallback: pasar string
-                        res = self.logic.delete_factura(str(inv_id_to_use))
-                    except Exception as e2:
-                        print(f"[INV-DELETE] fallback delete_factura error: {e2}")
-                        res = False
-            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "delete_factura"):
-                try:
-                    res = self.logic.data_access.delete_factura(inv_id_to_use)
-                except Exception:
-                    try:
-                        res = self.logic.data_access.delete_factura(str(inv_id_to_use))
-                    except Exception:
-                        res = False
+                    tried.append(f"execute_sql wrapper: {e}")
 
-            if res:
-                QMessageBox.information(self, "Eliminado", "Factura eliminada.")
-                self.refresh()
-            else:
-                QMessageBox.critical(self, "Error", "No se pudo eliminar (ver log).")
+            if not success:
+                for fn_name in ("delete_record", "remove_record"):
+                    fn = getattr(self.logic, fn_name, None)
+                    if callable(fn):
+                        try:
+                            res = fn("invoices", iid_int)
+                            if isinstance(res, tuple):
+                                success = bool(res[0])
+                            else:
+                                success = bool(res)
+                            tried.append(f"{fn_name}: OK" if success else f"{fn_name}: returned False")
+                            if success:
+                                break
+                        except Exception as e:
+                            tried.append(f"{fn_name}: {e}")
+
         except Exception as e:
-            logger.exception("Error en _delete_invoice: %s", e)
-            QMessageBox.critical(self, "Error", f"No se pudo eliminar la factura:\n{e}")
+            tried.append(str(e))
 
+        if not success:
+            logger.debug("Delete invoice attempts: %s", tried)
+            QMessageBox.critical(self, "Eliminar", f"No se pudo eliminar la factura. Intentos: {tried}")
+            return
 
-
+        QMessageBox.information(self, "Eliminar", "Factura eliminada correctamente.")
+        try:
+            self.refresh()
+            p = self.parent()
+            safety = 0
+            while p is not None and safety < 8:
+                if hasattr(p, "_populate_companies"):
+                    try: p._populate_companies()
+                    except Exception: pass
+                if hasattr(p, "invoice_tab") and hasattr(p.invoice_tab, "refresh"):
+                    try: p.invoice_tab.refresh()
+                    except Exception: pass
+                p = p.parent() if callable(getattr(p, "parent", None)) else None
+                safety += 1
+        except Exception:
+            pass
 
     def _export_invoice_pdf(self, record: Dict[str, Any]):
         company = self.get_current_company()
@@ -686,14 +691,6 @@ class InvoiceHistoryTab(QWidget):
 
         menu.addSeparator()
 
-        open_pdf_action = menu.addAction("Abrir PDF")
-        open_pdf_action.triggered.connect(lambda: self._open_selected_pdf())
-
-        regen_action = menu.addAction("Regenerar enlace")
-        regen_action.triggered.connect(lambda: self._regenerate_selected_pdf_link())
-
-        menu.addSeparator()
-
         delete_action = menu.addAction("🗑 Eliminar")
         delete_action.triggered.connect(lambda: self._delete_invoice(record))
 
@@ -717,106 +714,3 @@ class InvoiceHistoryTab(QWidget):
         except Exception:
             pass
         return {}
-
-    # --- Methods added/modified for PDF open and regeneration (history) ---
-
-    def _get_selected_invoice_id(self) -> Optional[str]:
-        """Returns the ID (text) of the currently selected table row, or None."""
-        try:
-            r = self.table.currentRow()
-            if r < 0:
-                return None
-            item = self.table.item(r, 0)
-            if not item:
-                return None
-            return item.text()
-        except Exception:
-            return None
-
-    def _open_selected_pdf(self):
-        """Open the signed/public URL for the selected invoice in the user's browser."""
-        invoice_id = self._get_selected_invoice_id()
-        if not invoice_id:
-            QMessageBox.information(self, "Abrir PDF", "Seleccione una factura primero.")
-            return
-        try:
-            inv = None
-            if hasattr(self.logic, 'get_invoice_by_id'):
-                inv = self.logic.get_invoice_by_id(invoice_id) or {}
-            else:
-                QMessageBox.information(self, "Abrir PDF", "El backend no soporta obtener factura por ID.")
-                return
-            pdf_url = (inv or {}).get('pdf_url') or (inv or {}).get('pdfUrl') or None
-            if not pdf_url:
-                QMessageBox.information(self, "Abrir PDF", "No se encontró URL del PDF para esta factura.")
-                return
-            webbrowser.open(pdf_url)
-        except Exception as e:
-            QMessageBox.warning(self, "Abrir PDF", f"No se pudo abrir el enlace:\n{e}")
-
-    def _regenerate_selected_pdf_link(self):
-        """
-        Generate a new signed URL for the selected invoice's storage path and persist it.
-        Uses logic.generate_signed_url_for_path(...) or falls back to data_access helper.
-        """
-        try:
-            invoice_id = self._get_selected_invoice_id()
-            if not invoice_id:
-                QMessageBox.information(self, "Regenerar enlace", "Seleccione una factura primero.")
-                return
-
-            inv = None
-            if hasattr(self.logic, 'get_invoice_by_id'):
-                inv = self.logic.get_invoice_by_id(invoice_id) or {}
-            else:
-                QMessageBox.information(self, "Regenerar enlace", "El backend no soporta obtener factura por ID.")
-                return
-
-            storage_path = inv.get('pdf_storage_path') or inv.get('pdfPath') or None
-            if not storage_path:
-                QMessageBox.information(self, "Regenerar enlace", "No se encontró storage_path para esta factura.")
-                return
-
-            # determine days (configurable)
-            days = 7
-            try:
-                import facot_config
-                days = int(getattr(facot_config, "PDF_SIGNED_URL_DAYS", 7) or 7)
-            except Exception:
-                days = 7
-
-            url = None
-            if hasattr(self.logic, "generate_signed_url_for_path"):
-                url = self.logic.generate_signed_url_for_path(storage_path, days=days)
-            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "generate_signed_url_for_path"):
-                url = self.logic.data_access.generate_signed_url_for_path(storage_path, days=days)
-            else:
-                QMessageBox.warning(self, "Regenerar enlace", "El backend no soporta generar signed URLs bajo demanda.")
-                return
-
-            if not url:
-                QMessageBox.warning(self, "Regenerar enlace", "No se pudo generar un nuevo enlace firmado.")
-                return
-
-            expires_at = (datetime.utcnow() + timedelta(days=min(days, 7))).isoformat()
-
-            # persist in backend
-            if hasattr(self.logic, "set_invoice_pdf_info"):
-                try:
-                    self.logic.set_invoice_pdf_info(invoice_id, storage_path, url, expires_at=expires_at)
-                except TypeError:
-                    # older signature: (invoice_id, storage_path, url)
-                    self.logic.set_invoice_pdf_info(invoice_id, storage_path, url)
-            elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "set_invoice_pdf_info"):
-                try:
-                    self.logic.data_access.set_invoice_pdf_info(invoice_id, storage_path, url, expires_at=expires_at)
-                except TypeError:
-                    self.logic.data_access.set_invoice_pdf_info(invoice_id, storage_path, url)
-
-            QMessageBox.information(self, "Regenerar enlace", f"Nuevo enlace generado y guardado.\nExpira: {expires_at}")
-            try:
-                self.refresh()
-            except Exception:
-                pass
-        except Exception as e:
-            QMessageBox.critical(self, "Regenerar enlace", f"No se pudo generar el enlace:\n{e}")
