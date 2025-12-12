@@ -803,6 +803,7 @@ class InvoiceTab(QWidget):
             "invoice_type": "emitida",
             "invoice_category": self.invoice_kind_combo.currentText(),
             "invoice_date": self.invoice_date.date().toString("yyyy-MM-dd"),
+            "imputation_date": self.invoice_date.date().toString("yyyy-MM-dd"),  # Fecha de imputación (igual a fecha de factura)
             "invoice_number": invoice_number,
             "third_party_name": cliente_nombre,
             "rnc": cliente_rnc,
@@ -811,6 +812,7 @@ class InvoiceTab(QWidget):
             "total_amount": total,
             "exchange_rate": tasa,
             "total_amount_rd": total_rd,
+            "attachment_path": None,
             "excel_path": "",
             "pdf_path": "",
         }
