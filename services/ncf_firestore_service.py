@@ -60,6 +60,32 @@ NCF_REGEX_STD = re.compile(r'^(?!E)[A-Z][0-9]{10}$')  # Letra≠E + 10 dígitos
 NCF_REGEX_ECF = re.compile(r'^E[0-9]{13}$')  # E + 13 dígitos
 
 
+def get_category_from_ncf_prefix(ncf_prefix: str) -> str:
+    """
+    Mapea el prefijo NCF a la categoría de factura.
+    Función inversa a CATEGORY_TO_PREFIX para compatibilidad con FACTURAS-PyQT6-GIT.
+    
+    Args:
+        ncf_prefix: Prefijo NCF de 3 caracteres (ej: 'B01', 'B02', 'E31')
+    
+    Returns:
+        Categoría de factura (ej: 'Factura Privada')
+    """
+    category_map = {
+        'B01': 'Factura Privada',
+        'B02': 'Consumidor Final',
+        'B04': 'Nota de Crédito',
+        'B14': 'Factura Exenta',
+        'B15': 'Factura Gubernamental',
+        'B16': 'Factura Exportación',
+        'E31': 'Factura Privada (e-CF)',
+        'E32': 'Consumidor Final (e-CF)',
+        'E33': 'Nota de Débito (e-CF)',
+        'E34': 'Nota de Crédito (e-CF)',
+    }
+    return category_map.get(ncf_prefix, 'Factura Privada')
+
+
 class NCFFirestoreService:
     """
     Servicio de NCF usando Firestore con transacciones.

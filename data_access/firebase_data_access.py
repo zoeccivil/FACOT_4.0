@@ -216,13 +216,33 @@ class FirebaseDataAccess(DataAccess):
     # ===== FACTURAS (INVOICES) =====
     
     def add_invoice(self, invoice_data: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
-        """Agrega una nueva factura con sus ítems. Retorna el ID."""
+        """
+        Agrega una nueva factura con sus ítems (compatible con FACTURAS-PyQT6-GIT).
+        Retorna el ID de la factura.
+        """
         try:
             import time
             invoice_id = int(time.time() * 1000) % 1000000
             
-            # Preparar datos de factura
-            invoice_doc = dict(invoice_data)
+            # Preparar datos de factura con TODOS los campos compatibles
+            invoice_doc = {
+                'company_id': invoice_data.get('company_id'),
+                'invoice_type': invoice_data.get('invoice_type', 'emitida'),  # CRÍTICO: Tipo de factura
+                'invoice_date': invoice_data.get('invoice_date'),
+                'imputation_date': invoice_data.get('imputation_date') or invoice_data.get('invoice_date'),  # Fecha de imputación
+                'invoice_number': invoice_data.get('invoice_number'),
+                'invoice_category': invoice_data.get('invoice_category'),  # Categoría (ej: "FACTURA PRIVADA")
+                'rnc': invoice_data.get('rnc'),
+                'third_party_name': invoice_data.get('third_party_name') or invoice_data.get('client_name'),  # Compatibilidad
+                'currency': invoice_data.get('currency', 'RD$'),
+                'itbis': float(invoice_data.get('itbis', 0.0)),
+                'total_amount': float(invoice_data.get('total_amount')),
+                'exchange_rate': float(invoice_data.get('exchange_rate', 1.0)),
+                'total_amount_rd': float(invoice_data.get('total_amount_rd') or invoice_data.get('total_amount')),
+                'attachment_path': invoice_data.get('attachment_path'),
+            }
+            
+            # Agregar metadata
             invoice_doc = self._add_metadata(invoice_doc)
             
             # Crear documento de factura
@@ -232,10 +252,17 @@ class FirebaseDataAccess(DataAccess):
             # Agregar ítems como subcolección
             items_ref = invoice_ref.collection('items')
             for idx, item in enumerate(items):
-                item_doc = self._add_metadata(dict(item))
+                item_doc = {
+                    'description': item.get('description'),
+                    'quantity': float(item.get('quantity', 0)),
+                    'unit_price': float(item.get('unit_price', 0)),
+                }
+                item_doc = self._add_metadata(item_doc)
                 items_ref.document(str(idx)).set(item_doc)
             
+            print(f"[FIREBASE] Factura {invoice_id} (tipo: {invoice_doc['invoice_type']}) guardada exitosamente")
             return invoice_id
+            
         except Exception as e:
             print(f"[FIREBASE] Error adding invoice: {e}")
             raise

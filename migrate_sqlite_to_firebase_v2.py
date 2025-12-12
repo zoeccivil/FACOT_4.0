@@ -254,7 +254,7 @@ def migrate_categories(sqlite_conn, db, dry_run=False):
     return count
 
 def migrate_invoices(sqlite_conn, db, dry_run=False):
-    """Migra invoices y sus items de SQLite a Firestore"""
+    """Migra invoices y sus items de SQLite a Firestore (compatible con FACTURAS-PyQT6)"""
     print_step("Migrando INVOICES (Facturas con Items)")
     
     cursor = sqlite_conn.cursor()
@@ -276,22 +276,28 @@ def migrate_invoices(sqlite_conn, db, dry_run=False):
             invoice_id = str(data.get('id', count + 1))
             company_id = str(data.get('company_id', '1'))
             
-            # Documento principal de invoice
+            # Documento principal de invoice (compatible con FACTURAS-PyQT6-GIT)
             doc_data = {
                 'company_id': company_id,
-                'invoice_number': data.get('invoice_number', ''),
+                'invoice_type': data.get('invoice_type', 'emitida'),  # CRÍTICO: emitida/gasto
                 'invoice_date': data.get('invoice_date', ''),
-                'invoice_type': data.get('invoice_type', ''),
-                'ncf': data.get('ncf', ''),
+                'imputation_date': data.get('imputation_date') or data.get('invoice_date', ''),  # Fecha de imputación
+                'invoice_number': data.get('invoice_number', ''),
+                'invoice_category': data.get('invoice_category', ''),  # Categoría de factura
                 'rnc': data.get('rnc', ''),
-                'third_party_name': data.get('third_party_name', ''),
+                'third_party_name': data.get('third_party_name') or data.get('client_name', ''),  # Compatibilidad
+                'currency': data.get('currency', 'RD$'),
+                'itbis': float(data.get('itbis', 0) or data.get('tax_amount', 0) or 0),
                 'total_amount': float(data.get('total_amount', 0) or 0),
+                'exchange_rate': float(data.get('exchange_rate', 1.0) or 1.0),
+                'total_amount_rd': float(data.get('total_amount_rd', 0) or data.get('total_amount', 0) or 0),
+                'attachment_path': data.get('attachment_path'),
                 'created_at': datetime.now(),
                 'updated_at': datetime.now(),
             }
             
-            # Campos opcionales
-            for field in ['due_date', 'subtotal', 'tax_amount', 'discount', 'notes']:
+            # Campos opcionales adicionales
+            for field in ['due_date', 'subtotal', 'discount', 'notes', 'ncf']:
                 if field in data and data[field]:
                     doc_data[field] = data[field]
             
