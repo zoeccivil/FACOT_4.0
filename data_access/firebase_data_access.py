@@ -252,13 +252,28 @@ class FirebaseDataAccess(DataAccess):
             # Agregar ítems como subcolección
             items_ref = invoice_ref.collection('items')
             for idx, item in enumerate(items):
-                item_doc = {
-                    'description': item.get('description'),
-                    'quantity': float(item.get('quantity', 0)),
-                    'unit_price': float(item.get('unit_price', 0)),
-                }
-                item_doc = self._add_metadata(item_doc)
-                items_ref.document(str(idx)).set(item_doc)
+                try:
+                    # Validar y convertir campos numéricos con defaults seguros
+                    quantity = item.get('quantity', 0)
+                    unit_price = item.get('unit_price', 0)
+                    
+                    item_doc = {
+                        'description': item.get('description', ''),
+                        'quantity': float(quantity) if quantity is not None else 0.0,
+                        'unit_price': float(unit_price) if unit_price is not None else 0.0,
+                    }
+                    item_doc = self._add_metadata(item_doc)
+                    items_ref.document(str(idx)).set(item_doc)
+                except (ValueError, TypeError) as e:
+                    print(f"[FIREBASE] Warning: Error processing item {idx}: {e}. Using default values.")
+                    # Guardar con valores por defecto en caso de error de conversión
+                    item_doc = {
+                        'description': item.get('description', ''),
+                        'quantity': 0.0,
+                        'unit_price': 0.0,
+                    }
+                    item_doc = self._add_metadata(item_doc)
+                    items_ref.document(str(idx)).set(item_doc)
             
             print(f"[FIREBASE] Factura {invoice_id} (tipo: {invoice_doc['invoice_type']}) guardada exitosamente")
             return invoice_id
