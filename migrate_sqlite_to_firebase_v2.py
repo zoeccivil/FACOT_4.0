@@ -290,7 +290,7 @@ def migrate_invoices(sqlite_conn, db, dry_run=False):
                 'itbis': float(data.get('itbis', 0) or data.get('tax_amount', 0) or 0),
                 'total_amount': float(data.get('total_amount', 0) or 0),
                 'exchange_rate': float(data.get('exchange_rate', 1.0) or 1.0),
-                'total_amount_rd': float(data.get('total_amount_rd', 0) or data.get('total_amount', 0) or 0),
+                'total_amount_rd': float(data.get('total_amount_rd') if data.get('total_amount_rd') is not None else (data.get('total_amount', 0) or 0)),
                 'attachment_path': data.get('attachment_path'),
                 'created_at': datetime.now(),
                 'updated_at': datetime.now(),

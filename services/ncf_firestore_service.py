@@ -65,12 +65,18 @@ def get_category_from_ncf_prefix(ncf_prefix: str) -> str:
     Mapea el prefijo NCF a la categoría de factura.
     Función inversa a CATEGORY_TO_PREFIX para compatibilidad con FACTURAS-PyQT6-GIT.
     
+    Nota: Este mapeo está separado de CATEGORY_TO_PREFIX porque:
+    1. CATEGORY_TO_PREFIX tiene múltiples variantes que mapean al mismo prefijo
+    2. Esta función necesita retornar UNA categoría canónica por prefijo
+    3. Mantiene la simplicidad y claridad del código
+    
     Args:
         ncf_prefix: Prefijo NCF de 3 caracteres (ej: 'B01', 'B02', 'E31')
     
     Returns:
         Categoría de factura (ej: 'Factura Privada')
     """
+    # Mapeo inverso: prefijo -> categoría canónica
     category_map = {
         'B01': 'Factura Privada',
         'B02': 'Consumidor Final',
