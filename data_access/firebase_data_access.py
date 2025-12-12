@@ -236,9 +236,9 @@ class FirebaseDataAccess(DataAccess):
                 'third_party_name': invoice_data.get('third_party_name') or invoice_data.get('client_name'),  # Compatibilidad
                 'currency': invoice_data.get('currency', 'RD$'),
                 'itbis': float(invoice_data.get('itbis', 0.0)),
-                'total_amount': float(invoice_data.get('total_amount')),
+                'total_amount': float(invoice_data.get('total_amount', 0.0)),
                 'exchange_rate': float(invoice_data.get('exchange_rate', 1.0)),
-                'total_amount_rd': float(invoice_data.get('total_amount_rd') or invoice_data.get('total_amount')),
+                'total_amount_rd': float(invoice_data.get('total_amount_rd') or invoice_data.get('total_amount', 0.0)),
                 'attachment_path': invoice_data.get('attachment_path'),
             }
             

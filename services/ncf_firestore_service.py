@@ -78,8 +78,8 @@ def get_category_from_ncf_prefix(ncf_prefix: str) -> str:
         'B14': 'Factura Exenta',
         'B15': 'Factura Gubernamental',
         'B16': 'Factura Exportación',
-        'E31': 'Factura Privada (e-CF)',
-        'E32': 'Consumidor Final (e-CF)',
+        'E31': 'Consumidor Final (e-CF)',
+        'E32': 'Crédito Fiscal (e-CF)',
         'E33': 'Nota de Débito (e-CF)',
         'E34': 'Nota de Crédito (e-CF)',
     }
