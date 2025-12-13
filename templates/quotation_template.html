@@ -24,7 +24,7 @@
     body {
       position: relative;
       width: 100%;
-      max-width: 21.59cm; /* 8.5in */
+      max-width: 21.59cm;
       margin: 0 auto; 
       color: var(--text);
       background: #FFFFFF; 
@@ -40,13 +40,8 @@
       min-height: 27.9cm;
       display: flex;
       flex-direction: column;
-
-      /* FIX: evita el hueco grande entre header y el resto */
       justify-content: flex-start;
-
-      /* opcional: espaciado consistente entre secciones */
       gap: 12px;
-
       position: relative;
     }
 
@@ -61,7 +56,6 @@
       margin-top: 8px;
     }
 
-    /* Logo como en las facturas: sin recuadro de color, imagen directa si existe */
     #company-logo {
       min-height: 70px;
       display: flex;
@@ -101,7 +95,7 @@
 
     #details {
       margin-bottom: 35px;
-      overflow: hidden; /* clearfix */
+      overflow: hidden;
     }
 
     #client {
@@ -132,7 +126,6 @@
       margin-bottom: 3px;
     }
 
-    /* Panel derecho (alineado a la derecha) */
     #quotation {
       float: right;
       text-align: right;
@@ -148,7 +141,6 @@
       text-transform: uppercase;
     }
 
-    /* Recuadro con datos de la cotización (alineado a la derecha) */
     #quotation .meta-box, #quotation-meta-box {
       background: var(--secondary);
       padding: 12px 15px;
@@ -156,7 +148,7 @@
       margin-top: 10px;
       display: inline-block;
       min-width: 280px;
-      text-align: left; /* filas con etiqueta/valor */
+      text-align: left;
       line-height: 1.6;
       border: 1px solid #ddd;
     }
@@ -212,7 +204,6 @@
       font-size: 0.95em;
     }
 
-    /* Ajuste de anchos: DESCRIPCIÓN más ancho, CANTIDAD más angosta */
     table .no { width: 5%; color: var(--primary); background: var(--secondary); font-weight: 600; text-align: center; }
     table .desc { width: 50%; text-align: left; }
     table .unit { width: 10%; text-align: center; text-transform: uppercase; }
@@ -322,24 +313,44 @@
   </style>
 
   <script>
-    /* --- AYUDA / PARSEO --- */
     function readInjectedJSON() {
       try {
+        console.log("[QTPL] readInjectedJSON() called");
         var node = document.getElementById('quotation-data');
-        if (node && node.textContent && node.textContent.trim() && node.textContent.trim() !== '/* INJECT_JSON_PLACEHOLDER */') {
+        if (!node) {
+          console.warn("[QTPL] quotation-data node NOT found");
+        } else {
+          console.log("[QTPL] quotation-data.textContent length:", (node.textContent || "").length);
+          console.log("[QTPL] quotation-data.textContent (first 300 chars):", (node.textContent || "").substring(0, 300));
+        }
+
+        if (
+          node &&
+          node.textContent &&
+          node.textContent.trim() &&
+          node.textContent.trim() !== '/* INJECT_JSON_PLACEHOLDER */'
+        ) {
+          console.log("[QTPL] JSON detected, trying to parse...");
           var payload = JSON.parse(node.textContent);
+          console.log("[QTPL] Parsed payload:", payload);
+
           window.COMPANY   = payload.COMPANY   || {};
           window.TEMPLATE  = payload.TEMPLATE  || {};
-          // Compat: aceptar payload.QUOTATION o payload.INVOICE
           window.QUOTATION = payload.QUOTATION || payload.INVOICE || {};
+
+          console.log("[QTPL] After parse -> COMPANY:", window.COMPANY);
+          console.log("[QTPL] After parse -> QUOTATION:", window.QUOTATION);
           return;
+        } else {
+          console.warn("[QTPL] Node.textContent empty or still placeholder");
         }
       } catch (e) {
         console.warn('Error parsing injected JSON', e);
       }
-      window.COMPANY = window.COMPANY || {};
-      window.TEMPLATE = window.TEMPLATE || {};
+      window.COMPANY   = window.COMPANY   || {};
+      window.TEMPLATE  = window.TEMPLATE  || {};
       window.QUOTATION = window.QUOTATION || {};
+      console.log("[QTPL] Fallback empty objects COMPANY/TEMPLATE/QUOTATION");
     }
 
     function formatCurrency(n, decimals = 2) {
@@ -374,29 +385,26 @@
       try {
         var p = (window.TEMPLATE && window.TEMPLATE.primary_color) || (window.COMPANY && window.COMPANY.primary_color) || '#0087C3';
         document.documentElement.style.setProperty('--primary', p);
-        // Removed insertRule to avoid DOMException - CSS variables handle this automatically
+        var sheet = document.styleSheets && document.styleSheets[0];
+        if (sheet && sheet.insertRule) {
+          sheet.insertRule('table thead th { background: ' + p + ' !important; }', sheet.cssRules.length);
+        }
       } catch (e) {
         console.warn('setColorVariables error', e);
       }
     }
 
-    /* --- LÓGICA DE NEGOCIO (N° Cotización) --- */
     function computeQuotationNumber(q, comp) {
-      // Si viene display_number/number, usarlo
       if (q && (q.display_number || q.number)) {
         return q.display_number || q.number;
       }
-      // Prefijo de 3 primeras letras de la empresa (ignorando espacios/símbolos)
       var name = (comp && comp.name) ? String(comp.name) : '';
       var letters = name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z]/g,'');
-      var prefix = (letters.substring(0,3) || 'EMP').toUpperCase(); // p.ej. BAR
-      // ID de la cotización (q.id); si no existe, usar 0
+      var prefix = (letters.substring(0,3) || 'EMP').toUpperCase();
       var id = (q && (q.id !== undefined && q.id !== null)) ? Number(q.id) : 0;
-      var idStr = String(Math.max(0, id)).padStart(6, '0'); // 6 dígitos
+      var idStr = String(Math.max(0, id)).padStart(6, '0');
       return 'COT-' + prefix + '-' + idStr;
     }
-
-    /* --- RENDER --- */
 
     function renderHeader() {
       try {
@@ -407,7 +415,6 @@
         var phone = comp.phone || comp.telefono || '';
         var email = comp.email || comp.correo || '';
         
-        // Logo como imagen directa (sin recuadro)
         var logoContainer = document.getElementById('company-logo');
         if (logoContainer) {
           var logoSrc = comp.logo_path || tpl.logo_path || '';
@@ -418,11 +425,9 @@
           }
         }
         
-        // Nombre empresa
         var nameNode = document.getElementById('company-name');
         if (nameNode) nameNode.textContent = String(name).toUpperCase();
 
-        // Meta: RNC, Dirección, Teléfono, Email
         var metaContainer = document.getElementById('company-meta-container');
         if (metaContainer) {
           metaContainer.innerHTML = '';
@@ -444,7 +449,6 @@
           metaContainer.innerHTML += '<div>' + emailHtml + '</div>';
         }
 
-        // Clearfix header
         var clear = document.createElement('div');
         clear.style.clear = 'both';
         var header = document.querySelector('header');
@@ -460,15 +464,12 @@
         var q = window.QUOTATION || {};
         var comp = window.COMPANY || {};
 
-        // Título "COTIZACIÓN"
         var typeNode = document.getElementById('quotation-type');
         var typeText = (q.type || q.quotation_type || 'COTIZACIÓN');
         if (typeNode) typeNode.textContent = String(typeText).toUpperCase();
 
-        // N° de cotización (ID + prefijo 3 letras empresa si no viene)
         var displayNumber = computeQuotationNumber(q, comp);
 
-        // Recuadro meta (derecha, sin NCF)
         var metaBox = document.getElementById('quotation-meta-box');
         if (metaBox) {
           metaBox.innerHTML = [
@@ -494,7 +495,6 @@
         var cr = document.getElementById('client-rnc');
         if (cr) cr.textContent = 'RNC: ' + escapeHtml(clientRnc);
 
-        // Clearfix details
         var detailsEl = document.getElementById('details');
         if (detailsEl) {
           var clear = document.createElement('div');
@@ -505,8 +505,6 @@
         console.warn('renderClient error', e); 
       }
     }
-
-<!-- SOLO MODIFICA ESTA FUNCIÓN dentro del <script> -->
 
     function renderItemsAndTotals() {
       try {
@@ -540,7 +538,6 @@
           html += '</tr>';
         }
         
-        // thead con moneda y anchos ya definidos por CSS
         var theadRow = document.querySelector('table thead tr');
         if (theadRow) {
           theadRow.innerHTML = [
@@ -559,9 +556,7 @@
         
         tbody.innerHTML = html;
         
-        // --- TOTALES CON VERIFICACIÓN DE apply_itbis ---
-        // ✅ CAMBIO CLAVE: Respetar la bandera apply_itbis del payload
-        var applyItbis = (q.apply_itbis !== undefined) ? q.apply_itbis : false; // Por defecto false en cotizaciones
+        var applyItbis = (q.apply_itbis !== undefined) ? q.apply_itbis : false;
         var itbisAmount = applyItbis ? (subtotal * itbis_rate) : 0.0;
         var total = subtotal + itbisAmount;
         
@@ -574,6 +569,7 @@
         console.error('renderItemsAndTotals error', e); 
       }
     }
+
     function renderFooter() {
       try {
         var sig = (window.COMPANY && (window.COMPANY.authorized_name || window.COMPANY.signature_name)) 
@@ -582,9 +578,6 @@
         var sigNode = document.getElementById('signature-name');
         if (sigNode) sigNode.textContent = (sig && String(sig).trim()) ? String(sig).toUpperCase() : 'NOMBRE AUTORIZADO';
 
-
-
-        // Clearfix firmas
         var sigWrap = document.querySelector('.signatures');
         if (sigWrap) {
           var clear = document.createElement('div');
@@ -597,17 +590,34 @@
     }
 
     function renderAll() {
+      console.log("[QTPL] renderAll() start");
+      console.log("[QTPL] COMPANY before render:", window.COMPANY);
+      console.log("[QTPL] QUOTATION before render:", window.QUOTATION);
+
       setColorVariables();
       renderHeader();
       renderMeta();
       renderClient();
       renderItemsAndTotals();
       renderFooter();
+
+      console.log("[QTPL] renderAll() end");
     }
 
     window.onload = function() {
-      try { readInjectedJSON(); } catch(e) { console.warn(e); }
-      setTimeout(renderAll, 50);
+      console.log("[QTPL] window.onload fired");
+      try { 
+        readInjectedJSON(); 
+      } catch(e) { 
+        console.warn("[QTPL] readInjectedJSON threw:", e); 
+      }
+      setTimeout(function() {
+        try { 
+          renderAll(); 
+        } catch(e) { 
+          console.warn("[QTPL] renderAll threw:", e); 
+        }
+      }, 50);
     };
   </script>
 </head>
@@ -641,7 +651,6 @@
         <div id="quotation">
           <h1 id="quotation-type">COTIZACIÓN</h1>
           <div id="quotation-meta-box" class="meta-box">
-            <!-- Se rellena con JS (sin NCF) -->
             <div class="meta-row">
               <span>N° Cotización:</span>
               <span class="detail-value number-large">N/A</span>
@@ -658,7 +667,9 @@
         </div>
       </div>
 
-      <div id="items-header" style="font-size: 1.1em; font-weight: 600; margin: 20px 0 10px 0; color: var(--text);">DETALLE DE SERVICIOS / PRODUCTOS</div>
+      <div id="items-header" style="font-size: 1.1em; font-weight: 600; margin: 20px 0 10px 0; color: var(--text);">
+        DETALLE DE SERVICIOS / PRODUCTOS
+      </div>
       
       <table border="0" cellspacing="0" cellpadding="0">
         <thead>

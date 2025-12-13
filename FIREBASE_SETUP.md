@@ -83,6 +83,39 @@ FACOT utiliza las siguientes colecciones en Firestore:
 | `third_parties` | Terceros (proveedores/clientes por RNC) |
 | `ncf_sequence_configs` | Configuración de secuencias NCF |
 
+### Estructura Detallada: Colección `invoices`
+
+**Compatibilidad:** Esta estructura es 100% compatible con FACTURAS-PyQT6-GIT.
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `company_id` | int | ID de la empresa |
+| `invoice_type` | string | Tipo de factura: 'emitida' o 'gasto' |
+| `invoice_date` | string | Fecha de la factura (YYYY-MM-DD) |
+| `imputation_date` | string | Fecha de imputación (YYYY-MM-DD) |
+| `invoice_number` | string | Número NCF (ej: B0100000164) |
+| `invoice_category` | string | Categoría (ej: "Factura Privada", "Consumidor Final") |
+| `rnc` | string | RNC del cliente/proveedor |
+| `third_party_name` | string | Nombre del cliente/proveedor |
+| `currency` | string | Moneda (RD$, USD, EUR, etc.) |
+| `itbis` | float | Monto del ITBIS |
+| `total_amount` | float | Total de la factura en moneda original |
+| `exchange_rate` | float | Tasa de cambio (1.0 si es RD$) |
+| `total_amount_rd` | float | Total en RD$ (total_amount × exchange_rate) |
+| `attachment_path` | string | Ruta del anexo/comprobante (opcional) |
+| `created_at` | timestamp | Fecha de creación del registro |
+| `updated_at` | timestamp | Última actualización del registro |
+
+#### Subcolección: `invoices/{invoice_id}/items`
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `description` | string | Descripción del ítem/servicio |
+| `quantity` | float | Cantidad |
+| `unit_price` | float | Precio unitario |
+| `created_at` | timestamp | Fecha de creación |
+| `updated_at` | timestamp | Última actualización |
+
 ## Reglas de Seguridad (firestore.rules)
 
 Ejemplo básico de reglas de seguridad:
