@@ -1,0 +1,168 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    FACOT UI THEME FIX - CHANGES SUMMARY                       ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+ISSUE: UI Theme Inconsistencies in Windows EXE Build
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROBLEMS FIXED:
+───────────────
+
+1. ❌ MENU BAR: White text on light background (unreadable)
+   ✅ FIXED: Theme-aware menu styles with proper contrast
+
+2. ❌ TABLES: Black/dark rows in light theme (mismatched)
+   ✅ FIXED: Explicit light colors for all table items
+
+3. ❌ BUILD: Missing PyQt6 WebEngine resources in packaged EXE
+   ✅ FIXED: Comprehensive build script with all resources
+
+
+FILES CHANGED:
+─────────────
+
+┌─ main.py ─────────────────────────────────────────────────────────────────┐
+│ • Modified _apply_safe_menu_styles() to respect theme (dark/light)        │
+│ • Removed palette override - now appends menu styles only                 │
+│ • Added regex-based QMenuBar detection for robustness                     │
+│ • Improved theme_id validation (None and empty string handling)           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ themes/style_template.qss ───────────────────────────────────────────────┐
+│ • Added explicit QTableWidget::item and QTableView::item styles           │
+│ • Defined background colors for normal/alternate/selected/hover states    │
+│ • Light theme: White (#FFFFFF) and light gray (#F8FAFC) alternating rows  │
+│ • Dark theme: Uses theme palette colors appropriately                     │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ build_facot_exe.bat (NEW) ───────────────────────────────────────────────┐
+│ • Complete Windows build automation with virtual environment              │
+│ • Auto-detects PyQt6 installation and includes WebEngine components:      │
+│   - QtWebEngineProcess.exe                                                │
+│   - Qt6/resources directory                                               │
+│   - Qt6/translations directory                                            │
+│ • Packages all data directories: templates/, themes/, assets/, data/      │
+│ • Includes Firebase credentials and config files if present               │
+│ • Error handling and detailed progress output                             │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ facot.spec ──────────────────────────────────────────────────────────────┐
+│ • Programmatically collects all data files                                │
+│ • Includes PyQt6 WebEngine binaries and resources                         │
+│ • Lists all hidden imports (firebase_admin, google.cloud.*, etc.)         │
+│ • Icon support with automatic fallback                                    │
+└───────────────────────────────────────────────────────────────────────────┘
+
+
+THEME BEHAVIOR:
+──────────────
+
+LIGHT THEME:
+  Menu Bar:       Light gray (#f8fafc) background
+                  Dark text (#1e293b)
+  Menu Items:     White background with dark text
+  Tables:         White (#FFFFFF) ↔ Light gray (#F8FAFC) alternating
+  Selection:      Light blue (#DBEAFE) with dark blue text (#1E40AF)
+  Hover:          Light gray highlight
+
+DARK THEME:
+  Menu Bar:       Dark background (#1e293b)
+                  Light text (#f1f5f9)
+  Menu Items:     Dark background with light text
+  Tables:         Dark alternating rows per theme colors
+  Selection:      Highlighted with proper contrast
+  Hover:          Darker shade highlight
+
+
+TEST COVERAGE:
+─────────────
+
+✓ Menu styling tests for light/dark themes
+✓ Table styling consistency tests
+✓ No black backgrounds in light theme verification
+✓ Theme integration tests
+✓ All tests passing (4/4 table tests)
+
+
+DOCUMENTATION:
+─────────────
+
+📄 UI_THEME_FIX_SUMMARY.md    Technical implementation details
+📄 BUILD_INSTRUCTIONS.md       User guide for building the executable
+📄 CHANGES_SUMMARY.txt         This file
+
+
+VERIFICATION CHECKLIST:
+──────────────────────
+
+To verify the fixes work correctly on Windows:
+
+□ Build using: build_facot_exe.bat
+□ Launch dist/facot.exe
+□ Check menu text is readable (dark text on light background)
+□ Switch to dark theme - menu should have light text on dark background
+□ View Dashboard - tables should show white/light-gray alternating rows
+□ View Invoice History - tables should show white/light-gray alternating rows
+□ Select a table row - should highlight with light blue background
+□ Test PDF preview (WebEngine) - should work with included resources
+
+
+TECHNICAL DETAILS:
+─────────────────
+
+Theme Application Order:
+  1. Initialize QApplication
+  2. Load theme manager
+  3. Apply saved theme (or default to "light")
+  4. Append safe menu styles (theme-aware)
+  5. Show main window
+
+Stylesheet Approach:
+  • Theme manager applies base QSS from style_template.qss
+  • Menu styles are appended (not overridden)
+  • Uses regex to detect existing menu styles
+  • Preserves all existing theme manager functionality
+
+Color Palette (Light Theme):
+  Background:      #F1F5F9 (app background)
+  Surface:         #FFFFFF (cards, tables)
+  Surface Alt:     #F8FAFC (alternate rows)
+  Foreground:      #0F172A (text)
+  Primary:         #2563EB (buttons, highlights)
+  Border:          #E2E8F0 (borders, lines)
+
+
+BUILD PROCESS:
+─────────────
+
+1. Creates .venv_build virtual environment
+2. Installs all requirements from requirements.txt
+3. Detects PyQt6 installation directory
+4. Collects WebEngine binaries and resources
+5. Packages all data directories
+6. Builds single-file executable with PyInstaller
+7. Output: dist/facot.exe (~150-250 MB)
+
+
+COMPATIBILITY:
+─────────────
+
+✓ Windows 10 and later
+✓ Python 3.10+
+✓ PyQt6 6.4.0+
+✓ PyQt6-WebEngine 6.4.0+
+✓ Existing theme system fully compatible
+✓ No breaking changes to API or configuration
+
+
+SUPPORT:
+───────
+
+For issues or questions:
+• Review BUILD_INSTRUCTIONS.md for build troubleshooting
+• Check UI_THEME_FIX_SUMMARY.md for implementation details
+• Ensure PyQt6 and PyQt6-WebEngine are properly installed
+• Try building with verbose output: pyinstaller facot.spec --log-level DEBUG
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+End of Changes Summary

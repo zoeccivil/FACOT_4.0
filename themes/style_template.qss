@@ -116,7 +116,9 @@ QPushButton#actionButton:hover {
 }
 
 /* --- TABLES --- */
-QTableWidget {
+/* Note: QTableView is included alongside QTableWidget for compatibility,
+   as some parts of the app may use QTableView directly or through inheritance */
+QTableWidget, QTableView {
     background-color: {{surface}};
     alternate-background-color: {{surface_alt}};
     gridline-color: {{table_grid}};
@@ -136,8 +138,20 @@ QHeaderView::section {
     font-size: 11px;
     letter-spacing: 0.5px;
 }
-QTableWidget::item {
+QTableWidget::item, QTableView::item {
     padding: 6px;
+    background-color: {{surface}};
+    color: {{foreground}};
+}
+QTableWidget::item:alternate, QTableView::item:alternate {
+    background-color: {{surface_alt}};
+}
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: {{selection_bg}};
+    color: {{selection_text}};
+}
+QTableWidget::item:hover, QTableView::item:hover {
+    background-color: {{surface_alt}};
 }
 
 /* --- TABS --- */

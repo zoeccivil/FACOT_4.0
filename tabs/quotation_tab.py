@@ -294,12 +294,23 @@ class QuotationTab(QWidget, ItemsLookupMixin):
 
     def _suggest_third_party(self, search_by):
         query = self.quotation_client_rnc.text() if search_by == "rnc" else self.quotation_client_name.text()
+        query = (query or "").strip()
+        print(f"[QTAB] suggest_third_party search_by={search_by} query='{query}'")
         if len(query) < 2:
-            self.quotation_suggestion_combo.hide(); return
-        results = self.logic.search_third_parties(query, search_by=search_by) if hasattr(self.logic, "search_third_parties") else []
+            self.quotation_suggestion_combo.hide()
+            return
+        results = []
+        if hasattr(self.logic, "search_third_parties"):
+            try:
+                results = self.logic.search_third_parties(query, search_by=search_by) or []
+            except Exception as e:
+                print(f"[QTAB] search_third_parties error: {e}")
+        print(f"[QTAB] results_count={len(results)} first={results[0] if results else None}")
         self.quotation_suggestion_combo.clear()
         for item in results:
-            self.quotation_suggestion_combo.addItem(f"{item['rnc']} - {item['name']}")
+            rnc = item.get("rnc") or ""
+            name = item.get("name") or ""
+            self.quotation_suggestion_combo.addItem(f"{rnc} - {name}")
         self.quotation_suggestion_combo.setVisible(bool(results))
 
     def _select_suggestion(self, idx):
@@ -538,8 +549,8 @@ class QuotationTab(QWidget, ItemsLookupMixin):
 
     def _save_quotation(self):
         """
-        Guardar/crear cotización. Busca preview PDF info en self._preview_pdf_info_quotation
-        (establecido por _generate_quotation_pdf) y la adjunta al documento y/o la persiste tras crear la cotización.
+        Guardar/crear cotización. También registra/actualiza el tercero en third_parties
+        antes de crear la cotización. Usa preview PDF info si existe.
         """
         try:
             company = self.get_current_company()
@@ -573,11 +584,16 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             itbis = subtotal * (getattr(self, "itbis_rate", 0.18) or 0.18) if getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked() else 0.0
             total = subtotal + itbis
 
+            rnc_val = (self.quotation_client_rnc.text() or "").strip()
+            tp_name = (self.quotation_client_name.text() or "").strip()
+
             data = {
                 "company_id": company.get("id"),
                 "quotation_date": self.quotation_date.date().toString("yyyy-MM-dd"),
-                "client_name": self.quotation_client_name.text(),
-                "client_rnc": self.quotation_client_rnc.text(),
+                "client_name": tp_name,
+                "client_rnc": rnc_val,
+                "third_party_name": tp_name,   # compat con esquema de facturas
+                "rnc": rnc_val,                # compat con esquema de facturas
                 "notes": self.quotation_notes.toPlainText() if getattr(self, "notes_box", None) and self.notes_box.isVisible() else "",
                 "currency": self.quotation_currency.text(),
                 "apply_itbis": bool(getattr(self, "apply_itbis_checkbox", None) and self.apply_itbis_checkbox.isChecked()),
@@ -600,6 +616,13 @@ class QuotationTab(QWidget, ItemsLookupMixin):
             except Exception as e:
                 print(f"[QT-SAVE] Error leyendo preview preview_info: {e}")
 
+            # Registrar/actualizar tercero antes de guardar la cotización
+            try:
+                if rnc_val and tp_name and hasattr(self.logic, "add_or_update_third_party"):
+                    self.logic.add_or_update_third_party(rnc=rnc_val, name=tp_name)
+            except Exception as e:
+                print(f"[WARN] No se pudo registrar/actualizar tercero: {e}")
+
             # Guardar o actualizar
             quotation_id = None
             try:
@@ -618,7 +641,7 @@ class QuotationTab(QWidget, ItemsLookupMixin):
                 print(f"[QT-SAVE] Error guardando cotización: {e}")
                 return
 
-            # Si hay preview_info persistir metadata explícitamente
+            # Persistir metadata del PDF si existe
             try:
                 preview_info = getattr(self, "_preview_pdf_info_quotation", None)
                 if preview_info and isinstance(preview_info, dict) and quotation_id:
@@ -658,6 +681,9 @@ class QuotationTab(QWidget, ItemsLookupMixin):
         except Exception as e:
             print(f"[QT-SAVE] Error inesperado en _save_quotation: {e}")
             QMessageBox.critical(self, "Error", f"No se pudo guardar la cotización:\n{e}")
+ 
+ 
+ 
     def _clear_form(self):
         try:
             self.quotation_date.setDate(QDate.currentDate())

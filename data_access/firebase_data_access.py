@@ -18,6 +18,7 @@ from google.cloud import storage as gcs_storage
 from google.oauth2 import service_account
 import mimetypes, os
 from typing import Optional
+from firebase_admin import firestore  # <‑‑ añade este import arriba
 
 # Asegúrate de que estos imports funcionen en tu proyecto
 try:
@@ -37,7 +38,24 @@ from typing import Optional
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
 
-# ... resto de imports existentes ...
+NCF_CATEGORY_MAP = {
+    'B01': 'Factura Privada',
+    'B02': 'Consumidor Final',
+    'B04': 'Nota de Crédito',
+    'B14': 'Factura Gubernamental',
+    'B15': 'Factura Exenta',
+    'B16': 'Gubernamental Exenta',
+    'E31': 'Factura Privada (e-CF)',
+    'E32': 'Consumidor Final (e-CF)',
+    'E33': 'Nota de Débito (e-CF)',
+    'E34': 'Nota de Crédito (e-CF)',
+}
+
+def _derive_invoice_category(self, invoice_number: str) -> Optional[str]:
+    if not invoice_number:
+        return None
+    prefix = (invoice_number or "").strip().upper()[:3]
+    return NCF_CATEGORY_MAP.get(prefix)
 
 
 class FirebaseDataAccess:
@@ -91,6 +109,9 @@ class FirebaseDataAccess:
 
         print(f"[STORAGE] Config -> host={self.storage_host} bucket={self.storage_bucket} sdk={'YES' if self.storage else 'NO'}")
         print(f"[STORAGE] Auth token {'OK' if self.storage_auth_token else 'ABSENTE'}")
+
+
+
 
     # ===== Método helper nuevo para obtener token =====
     def _get_service_account_token(self, json_path: str) -> Optional[str]:
@@ -465,59 +486,138 @@ class FirebaseDataAccess:
     #      RESTO (Facturas, Cotizaciones, Terceros)
     # ==========================================
 
+
     def get_third_party_by_rnc(self, rnc: str) -> Optional[Dict[str, Any]]:
-        try:
-            parties_ref = self.db.collection('third_parties')
-            query = parties_ref.where('rnc', '==', rnc).limit(1)
-            docs = list(query.stream())
-            if docs:
-                party_data = docs[0].to_dict() or {}
-                party_data['id'] = docs[0].id
-                return party_data
+        rnc = (rnc or "").strip()
+        if not rnc:
             return None
+        try:
+            parties_ref = self.db.collection("third_parties")
+            docs = list(parties_ref.where("rnc", "==", rnc).limit(1).stream())
+            if not docs:
+                return None
+            party_data = docs[0].to_dict() or {}
+            party_data["id"] = docs[0].id
+            return party_data
         except Exception as e:
             print(f"[FIREBASE] Error getting third party by RNC {rnc}: {e}")
             return None
 
-    def search_third_parties(self, query: str, search_by: str = 'name') -> List[Dict[str, Any]]:
-        try:
-            parties_ref = self.db.collection('third_parties')
-            all_parties = []
-            for doc in parties_ref.limit(100).stream():
-                party_data = doc.to_dict() or {}
-                party_data['id'] = doc.id
 
-                if search_by == 'name':
-                    if (query or "").lower() in str(party_data.get('name', '')).lower():
-                        all_parties.append(party_data)
-                elif search_by == 'rnc':
-                    if (query or "") in str(party_data.get('rnc', '')):
-                        all_parties.append(party_data)
-
-                if len(all_parties) >= 20:
-                    break
-            return all_parties
-        except Exception as e:
-            print(f"[FIREBASE] Error searching third parties: {e}")
+    def search_third_parties(self, query: str, search_by: str = "name") -> List[Dict[str, Any]]:
+        """
+        Búsqueda robusta sin depender de índices especiales:
+        - search_by='rnc': primero exacto; si no, filtra en los más recientes (updated_at desc).
+        - search_by='name': filtra subcadena (case-insensitive) en los más recientes (updated_at desc).
+        Limita a 20 resultados.
+        """
+        query = (query or "").strip()
+        if not query:
             return []
 
-    def add_or_update_third_party(self, rnc: str, name: str) -> None:
+        parties_ref = self.db.collection("third_parties")
+        results: List[Dict[str, Any]] = []
+        q_lower = query.lower()
+
         try:
-            parties_ref = self.db.collection('third_parties')
-            query = parties_ref.where('rnc', '==', rnc).limit(1)
-            docs = list(query.stream())
+            if search_by == "rnc":
+                # 1) Exacto
+                exact = list(parties_ref.where("rnc", "==", query).limit(1).stream())
+                if exact:
+                    d = exact[0]
+                    data = d.to_dict() or {}
+                    data["id"] = d.id
+                    return [data]
 
-            party_data = {'rnc': rnc, 'name': name}
-            party_data = self._add_metadata(party_data, is_update=len(docs) > 0)
+                # 2) Recientes: updated_at desc, hasta 500, filtro contiene (prefijo o subcadena)
+                try:
+                    docs = list(
+                        parties_ref.order_by("updated_at", direction=firestore.Query.DESCENDING)
+                        .limit(500)
+                        .stream()
+                    )
+                except Exception:
+                    docs = list(parties_ref.limit(500).stream())
 
-            if docs:
-                docs[0].reference.update(party_data)
-            else:
-                parties_ref.add(party_data)
+                for d in docs:
+                    data = d.to_dict() or {}
+                    data["id"] = d.id
+                    if q_lower in str(data.get("rnc", "")).lower():
+                        results.append(data)
+                    if len(results) >= 20:
+                        break
+                return results
+
+            # ---- search_by == "name" ----
+            try:
+                docs = list(
+                    parties_ref.order_by("updated_at", direction=firestore.Query.DESCENDING)
+                    .limit(500)
+                    .stream()
+                )
+            except Exception:
+                docs = list(parties_ref.limit(500).stream())
+
+            for d in docs:
+                data = d.to_dict() or {}
+                data["id"] = d.id
+                if q_lower in str(data.get("name", "")).lower():
+                    results.append(data)
+                if len(results) >= 20:
+                    break
+            return results
+
         except Exception as e:
-            print(f"[FIREBASE] Error adding/updating third party: {e}")
-            raise
+            print(f"[SEARCH-TP] Error: {e}")
+            return results
 
+    def add_or_update_third_party(self, rnc: str, name: str, updated_by: str = None):
+        """
+        Upsert con normalización. Actualiza nombre si cambia y es (opcional) más largo.
+        """
+        rnc = (rnc or "").strip()
+        name = (name or "").strip()
+        if not rnc or not name:
+            return None
+
+        rnc_norm = rnc.upper()
+        name_norm = " ".join(name.upper().split())
+        now = datetime.utcnow().isoformat()
+
+        coll = self.db.collection("third_parties")
+        existing = list(coll.where("rnc", "==", rnc).limit(1).stream())
+        if existing:
+            ref = existing[0].reference
+            data_old = existing[0].to_dict() or {}
+            old_name = (data_old.get("name") or "").strip()
+            old_name_norm = (data_old.get("name_norm") or "").strip()
+            payload = {
+                "rnc": rnc,
+                "rnc_norm": rnc_norm,
+                "name": old_name,
+                "name_norm": old_name_norm,
+                "updated_at": now,
+                "updated_by": updated_by,
+            }
+            if name != old_name and len(name) >= len(old_name):
+                payload["name"] = name
+                payload["name_norm"] = name_norm
+            ref.set(payload, merge=True)
+            return ref.id
+        else:
+            doc = coll.document()
+            doc.set(
+                {
+                    "rnc": rnc,
+                    "rnc_norm": rnc_norm,
+                    "name": name,
+                    "name_norm": name_norm,
+                    "created_at": now,
+                    "updated_at": now,
+                    "updated_by": updated_by,
+                }
+            )
+            return doc.id
     # ===== FACTURAS (INVOICES) =====
 
     def get_facturas(self, company_id: int, only_issued: bool = True) -> List[Dict[str, Any]]:
@@ -525,22 +625,45 @@ class FirebaseDataAccess:
 
     def add_invoice(self, invoice_data: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
         """
-        Crea factura y sus ítems. Si no viene 'invoice_number', intenta generar NCF usando sequences.
-        Guarda company_id y tipos coherentes.
-
-        Nota: Si invoice_data incluye 'pdf_storage_path' y/o 'pdf_url', se persisten en el documento.
+        Crea factura y sus ítems. Alineado con FACTURAS-PyQT6-GIT.
         """
         try:
             import time
             invoice_id = str(int(time.time() * 1000))
             data = dict(invoice_data or {})
+
             # Normalizar company_id
             if 'company_id' in data and isinstance(data['company_id'], str) and data['company_id'].isdigit():
                 data['company_id'] = int(data['company_id'])
+
             # Generar invoice_number si se solicita (requiere ncf_type)
             ncf_type = (data.get('ncf_type') or '').strip().upper()
             if not data.get('invoice_number') and ncf_type:
                 data['invoice_number'] = self.get_next_ncf(int(data.get('company_id')), ncf_type)
+
+            # ---- Campos de compatibilidad requeridos ----
+            data['invoice_type'] = data.get('invoice_type') or 'emitida'
+            data['imputation_date'] = data.get('imputation_date') or data.get('invoice_date') or datetime.utcnow().date().isoformat()
+            inv_num = data.get('invoice_number') or ''
+            data['invoice_category'] = data.get('invoice_category') or self._derive_invoice_category(inv_num) or ''
+            data['third_party_name'] = data.get('third_party_name') or data.get('client_name') or ''
+            # Mantener client_name como espejo para compatibilidad retro (opcional)
+            if 'client_name' not in data and data.get('third_party_name'):
+                data['client_name'] = data['third_party_name']
+
+            # total_amount_rd: total × exchange_rate (si ambos existen y son numéricos)
+            try:
+                tot = float(data.get('total_amount') or 0)
+                exr = float(data.get('exchange_rate') or 1)
+                data['total_amount_rd'] = data.get('total_amount_rd')
+                if data['total_amount_rd'] in (None, '', 0):
+                    data['total_amount_rd'] = round(tot * exr, 2)
+            except Exception:
+                pass
+
+            # attachment_path opcional
+            if 'attachment_path' not in data:
+                data['attachment_path'] = data.get('attachment_path', None)
 
             # Añadir pdf fields si vienen desde preview
             pdf_storage_path = data.pop('pdf_storage_path', None)
@@ -554,11 +677,11 @@ class FirebaseDataAccess:
 
             doc_ref = self.db.collection('invoices').document(invoice_id)
             doc_ref.set(data)
+
             for i, item in enumerate(items or []):
                 item_data = self._add_metadata(dict(item or {}))
                 doc_ref.collection('items').document(str(i)).set(item_data)
 
-            # If we have pdf info and an invoice id, also set file index
             if pdf_storage_path or pdf_url:
                 try:
                     self.set_file_index(pdf_storage_path or f"invoices/{invoice_id}", {
@@ -576,24 +699,27 @@ class FirebaseDataAccess:
             print(f"[FIREBASE] Error adding invoice: {e}")
             raise
 
-    def get_invoices(self, company_id: int, limit: int = 5000, offset: int = 0) -> List[Dict[str, Any]]:
+    def get_invoices(self, company_id: Optional[int] = None, limit: int = 50000, offset: int = 0) -> List[Dict[str, Any]]:
         try:
             ref = self.db.collection('invoices')
-            # Probar int y str para company_id
             docs = []
-            try:
-                from google.cloud.firestore_v1 import FieldFilter
-                q1 = ref.where(filter=FieldFilter('company_id', '==', company_id)).limit(limit)
-                docs = list(q1.stream())
-                if not docs:
-                    q2 = ref.where(filter=FieldFilter('company_id', '==', str(company_id))).limit(limit)
-                    docs = list(q2.stream())
-            except Exception:
-                q1 = ref.where('company_id', '==', company_id).limit(limit)
-                docs = list(q1.stream())
-                if not docs:
-                    q2 = ref.where('company_id', '==', str(company_id)).limit(limit)
-                    docs = list(q2.stream())
+            if company_id is None:
+                # Sin filtro de empresa: trae hasta 'limit'
+                docs = list(ref.limit(limit).stream())
+            else:
+                try:
+                    from google.cloud.firestore_v1 import FieldFilter
+                    q1 = ref.where(filter=FieldFilter('company_id', '==', company_id)).limit(limit)
+                    docs = list(q1.stream())
+                    if not docs:
+                        q2 = ref.where(filter=FieldFilter('company_id', '==', str(company_id))).limit(limit)
+                        docs = list(q2.stream())
+                except Exception:
+                    q1 = ref.where('company_id', '==', company_id).limit(limit)
+                    docs = list(q1.stream())
+                    if not docs:
+                        q2 = ref.where('company_id', '==', str(company_id)).limit(limit)
+                        docs = list(q2.stream())
             out = []
             for d in docs:
                 dd = d.to_dict() or {}
@@ -606,6 +732,10 @@ class FirebaseDataAccess:
         except Exception as e:
             print(f"[FIREBASE] Error getting invoices: {e}")
             return []
+
+    def get_companies_list(self) -> List[Dict[str, Any]]:
+        # Alias cómodo para los diálogos
+        return self.get_all_companies()
 
     def get_invoice_by_id(self, invoice_id: int) -> Optional[Dict[str, Any]]:
         try:

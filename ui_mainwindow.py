@@ -708,37 +708,37 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"No se pudo abrir la configuración de Firebase:\n{e}")
     
     def _abrir_reporte_ventas(self):
-        """Abre el diálogo de reporte de ventas."""
+        """Abre el diálogo de reporte de ventas (nuevo UI)."""
         try:
-            from dialogs.reports_dialog import SalesReportDialog
+            from ui.report_sales_dialog import SalesReportDialog
             dialog = SalesReportDialog(self.hybrid_logic or self.logic, self)
             dialog.exec()
         except ImportError:
             QMessageBox.information(
-                self, 
-                "Reporte de Ventas", 
+                self,
+                "Reporte de Ventas",
                 "El módulo de reportes está en desarrollo.\n\n"
                 "Próximamente podrá generar reportes de ventas por período."
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error abriendo reporte de ventas: {e}")
-    
+
     def _abrir_reporte_clientes(self):
-        """Abre el diálogo de reporte por cliente."""
+        """Abre el diálogo de reporte por cliente (nuevo UI)."""
         try:
-            from dialogs.reports_dialog import ClientsReportDialog
+            from ui.report_clients_dialog import ClientsReportDialog
             dialog = ClientsReportDialog(self.hybrid_logic or self.logic, self)
             dialog.exec()
         except ImportError:
             QMessageBox.information(
-                self, 
-                "Reporte por Cliente", 
+                self,
+                "Reporte por Cliente",
                 "El módulo de reportes está en desarrollo.\n\n"
                 "Próximamente podrá generar reportes por cliente."
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error abriendo reporte de clientes: {e}")
-
+            
     # --------- Menu handlers ----------
     def _abrir_base_de_datos(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Abrir Base de Datos", "", "Database Files (*.db);;Todos los archivos (*)")

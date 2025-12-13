@@ -68,6 +68,24 @@ CATEGORY_TO_PREFIX = {
 }
 DEFAULT_UNIT_FALLBACK = "UND"
 
+
+NCF_CATEGORY_MAP = {
+    'B01': 'Factura Privada',
+    'B02': 'Consumidor Final',
+    'B04': 'Nota de Crédito',
+    'B14': 'Factura Gubernamental',
+    'B15': 'Factura Exenta',
+    'B16': 'Gubernamental Exenta',
+    'E31': 'Factura Privada (e-CF)',
+    'E32': 'Consumidor Final (e-CF)',
+    'E33': 'Nota de Débito (e-CF)',
+    'E34': 'Nota de Crédito (e-CF)',
+}
+
+def _derive_invoice_category_from_ncf(ncf: str) -> str:
+    if not ncf:
+        return ""
+    return NCF_CATEGORY_MAP.get((ncf or "").strip().upper()[:3], "")
 # Logger
 logger = logging.getLogger(__name__)
 
@@ -95,6 +113,9 @@ class InvoiceTab(QWidget):
         except Exception:
             pass
         self._build_ui()
+
+
+
     # -------------------------
     # UI principal
     # -------------------------
@@ -924,13 +945,7 @@ class InvoiceTab(QWidget):
         return initials[:max_chars]
 
     def _save_invoice(self):
-        """Guarda la factura asegurando NCF, vencimiento, moneda y metadata de PDF.
-        Requisitos:
-        - Normaliza y añade 'currency' y 'exchange_rate' al payload.
-        - Acepta que add_invoice retorne dict o primitivo; extrae el invoice_id.
-        - Persiste pdf info usando set_invoice_pdf_info con manejo de firmas antiguas.
-        - Imprime debug para facilitar diagnóstico si el backend devuelve formatos inesperados.
-        """
+        """Guarda la factura asegurando NCF, vencimiento, moneda, terceros y metadata de PDF."""
         company = self.get_current_company()
         if not company:
             QMessageBox.warning(self, "Empresa", "Seleccione una empresa.")
@@ -968,30 +983,58 @@ class InvoiceTab(QWidget):
         except Exception:
             exchange_rate = 1.0
 
-        # 5) CONSTRUIR PAYLOAD (asegurar keys esperadas por backend)
+        # 5) CONSTRUIR PAYLOAD (asegurar keys esperadas por backend FACTURAS-PyQT6-GIT)
+        invoice_date_str = self.invoice_date.date().toString("yyyy-MM-dd")
+        imputation_date = invoice_date_str
+        ncf_current = current_ncf or ""
+        invoice_category = self.invoice_kind_combo.currentText() or ""
+        if not invoice_category:
+            invoice_category = _derive_invoice_category_from_ncf(ncf_current) or ""
+
+        total_amount_rd = round(total * exchange_rate, 2)
+
         invoice_payload = {
             "company_id": int(company.get("id") or 0),
-            "ncf": current_ncf,
-            "invoice_number": current_ncf,
-            "invoice_date": self.invoice_date.date().toString("yyyy-MM-dd"),
-            "due_date": self.invoice_due_date.date().toString("yyyy-MM-dd"),
-            "client_name": (self.client_name.text() or "").strip(),
-            "client_rnc": (self.client_rnc.text() or "").strip(),
+
+            # Compatibilidad FACTURAS-PyQT6-GIT
+            "invoice_type": "emitida",
+            "invoice_date": invoice_date_str,
+            "imputation_date": imputation_date,
+            "invoice_number": ncf_current,
+            "invoice_category": invoice_category,
+            "rnc": (self.client_rnc.text() or "").strip(),
+            "third_party_name": (self.client_name.text() or "").strip(),
             "currency": currency,
-            "exchange_rate": exchange_rate,
-            "subtotal": round(subtotal, 2),
             "itbis": round(itbis, 2),
             "total_amount": round(total, 2),
+            "exchange_rate": exchange_rate,
+            "total_amount_rd": total_amount_rd,
+            "attachment_path": None,
+
+            # Legacy / compat local
+            "ncf": ncf_current,
+            "due_date": self.invoice_due_date.date().toString("yyyy-MM-dd"),
+            "client_name": (self.client_name.text() or "").strip(),  # espejo legacy
+            "client_rnc": (self.client_rnc.text() or "").strip(),    # espejo legacy
+            "subtotal": round(subtotal, 2),
             "items": items,
             "type": "emitida",
-            # campos opcionales / compatibilidad
-            "invoice_category": self.invoice_kind_combo.currentText(),
             "notes": "",
+
             # metadata del preview PDF (si existe)
             "pdf_storage_path": pdf_meta.get("storage_path", ""),
             "pdf_url": pdf_meta.get("url", ""),
             "pdf_expires_at": pdf_meta.get("expires_at", "")
         }
+
+        # 5b) Registrar/actualizar el tercero en la colección third_parties
+        rnc_val = (self.client_rnc.text() or "").strip()
+        tp_name = (self.client_name.text() or "").strip()
+        try:
+            if rnc_val and tp_name and hasattr(self.logic, "add_or_update_third_party"):
+                self.logic.add_or_update_third_party(rnc=rnc_val, name=tp_name)
+        except Exception as e:
+            print(f"[WARN] No se pudo registrar/actualizar tercero: {e}")
 
         # Debug: imprimir payload antes de guardar
         try:
@@ -1006,12 +1049,9 @@ class InvoiceTab(QWidget):
                 QMessageBox.critical(self, "Error", "Método add_invoice no encontrado en logic.")
                 return
 
-            # add_invoice puede aceptar signature (invoice_payload, items) o solo invoice_payload.
-            # Intentamos ambas formas según la existencia de la firma en data_access.
             try:
                 result = self.logic.add_invoice(invoice_payload, items)
             except TypeError:
-                # Fallback - backend espera (invoice_payload) sólo
                 result = self.logic.add_invoice(invoice_payload)
 
             print("[INV-SAVE] add_invoice returned:", repr(result))
@@ -1024,23 +1064,17 @@ class InvoiceTab(QWidget):
                 elif isinstance(result, (int, str)):
                     invoice_id = result
                 elif isinstance(result, dict):
-                    # Buscar keys comunes
                     for k in ("id", "invoice_id", "doc_id", "inserted_id", "name"):
                         if k in result and result[k]:
                             invoice_id = result[k]
                             break
-                    # Algunos wrappers devuelven {'success': True, 'id': '...'}
-                    if invoice_id is None:
-                        if result.get("success") and (result.get("id") or result.get("invoice_id")):
-                            invoice_id = result.get("id") or result.get("invoice_id")
-                    # Si sigue None, intentar tomar doc id si result tiene un nested doc
+                    if invoice_id is None and result.get("success") and (result.get("id") or result.get("invoice_id")):
+                        invoice_id = result.get("id") or result.get("invoice_id")
                     if invoice_id is None and len(result) == 1:
-                        # tomar primer valor si parece razonable
                         val = next(iter(result.values()))
                         if isinstance(val, (int, str)):
                             invoice_id = val
                 else:
-                    # intentar convetir a string
                     invoice_id = str(result)
             except Exception as e:
                 print("[INV-SAVE] Error extrayendo invoice_id:", e)
@@ -1049,12 +1083,10 @@ class InvoiceTab(QWidget):
             # 8) PERSISTIR METADATA DEL PDF (si existe)
             if pdf_meta.get("url") and invoice_id:
                 try:
-                    # lógica flexible para distintas firmas set_invoice_pdf_info(invoice_id, storage_path, url, expires_at=...)
                     if hasattr(self.logic, "set_invoice_pdf_info"):
                         try:
                             self.logic.set_invoice_pdf_info(invoice_id, pdf_meta.get("storage_path"), pdf_meta.get("url"), expires_at=pdf_meta.get("expires_at"))
                         except TypeError:
-                            # firma antigua sin expires_at
                             self.logic.set_invoice_pdf_info(invoice_id, pdf_meta.get("storage_path"), pdf_meta.get("url"))
                     elif hasattr(self.logic, "data_access") and hasattr(self.logic.data_access, "set_invoice_pdf_info"):
                         try:
@@ -1072,23 +1104,20 @@ class InvoiceTab(QWidget):
             except Exception:
                 pass
 
-            # Clear local state/UI after successful save
             try:
                 self._clear_invoice_form()
-                self._update_ncf_sequence()  # prepara el siguiente
+                self._update_ncf_sequence()
                 self._preview_pdf_info = None
                 self._preview_pdf_info_invoice = None
             except Exception:
                 pass
 
-            # Emit signal si hay un invoice_id numérico convertible a int
             try:
                 if invoice_id is not None:
                     try:
                         iid = int(invoice_id)
                         self.invoice_saved.emit(iid)
                     except Exception:
-                        # si no es convertible, no emitimos o emitimos 0 según preferencia
                         pass
             except Exception:
                 pass
@@ -1096,8 +1125,6 @@ class InvoiceTab(QWidget):
         except Exception as e:
             logger.exception("Save failed")
             QMessageBox.critical(self, "Error", f"Error al guardar: {e}")
-
-
 
 
     def _set_invoice_due_date_widget(self, date_str):
@@ -1361,3 +1388,6 @@ class InvoiceTab(QWidget):
             pass
         # Luego actualiza secuencia NCF
         self._update_ncf_sequence()
+
+
+
