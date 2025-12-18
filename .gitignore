@@ -20,6 +20,16 @@ wheels/
 .installed.cfg
 *.egg
 
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Ejecutables
+*.exe
+*.msi
+*.app
+
 # PyQt
 *.ui.autosave
 

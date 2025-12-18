@@ -1,38 +1,72 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('c:\\Users\\ZOEC CIVIL DESK\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\PyQt6\\Qt6\\bin\\QtWebEngineProcess.exe', 'PyQt6\\Qt6\\bin')],
-    datas=[('templates', 'templates'), ('themes', 'themes'), ('data', 'data'), ('assets', 'assets'), ('facot_config.py', '.'), ('facot_config.json', '.'), ('c:\\Users\\ZOEC CIVIL DESK\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\PyQt6\\Qt6\\resources', 'PyQt6\\Qt6\\resources'), ('c:\\Users\\ZOEC CIVIL DESK\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\PyQt6\\Qt6\\translations', 'PyQt6\\Qt6\\translations')],
-    hiddenimports=['firebase_admin', 'google.cloud.firestore', 'google.cloud.storage', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineCore', 'openpyxl', 'pandas'],
+    binaries=[],
+    datas=[
+        ('templates', 'templates'),
+        ('assets', 'assets'),
+    ],
+    hiddenimports=[
+        'PyQt6',
+        'PyQt6.QtCore',
+        'PyQt6.QtGui',
+        'PyQt6.QtWidgets',
+        'PyQt6.QtWebEngineWidgets',
+        'firebase_admin',
+        'firebase_admin.credentials',
+        'firebase_admin.firestore',
+        'google.cloud.firestore',
+        'google.cloud.firestore_v1',
+        'google.cloud.firestore_v1.services.firestore.client',
+        'fpdf',
+        'pandas',
+        'openpyxl',
+        'PIL',
+        'PIL.Image',
+        'certifi',
+        'grpc',
+        'google.auth',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'tkinter',
+        'matplotlib',
+        'numpy.testing',
+        'pytest',
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
-    name='facot',
+    name='FACOT_4.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=False,  # Sin ventana de consola
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/facot_icon.ico'
 )
